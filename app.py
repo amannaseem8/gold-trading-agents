@@ -11,16 +11,16 @@ st.set_page_config(
 )
 
 st.title("🪙 XAU/USD Multi-Agent AI Trading Desk (Powered by Groq)")
-st.caption("Ultra-fast autonomous AI agents powered by Llama 3.3 70B.")
+st.caption("Ultra-fast autonomous AI agents powered by Llama 3.1 Instant.")
 
 # --- Sidebar: Groq API Key ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     raw_api_key = st.text_input("Groq API Key (Free):", type="password")
     api_key = raw_api_key.strip() if raw_api_key else ""
-    st.markdown("[Free Groq Key yahan se lein (15 sec)](https://console.groq.com/)")
+    st.markdown("[Free Groq Key yahan se lein](https://console.groq.com/)")
     st.divider()
-    st.success("⚡ Powered by Groq LPU: No 503 High Demand Errors!")
+    st.success("⚡ Powered by Groq LPU: Instant 800 tokens/sec speed!")
 
 # --- Live Market Data Fetcher ---
 @st.cache_data(ttl=60)
@@ -68,18 +68,30 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
-# --- Helper: Query Groq Llama 3.3 70B ---
+# --- Helper: Query Groq with Fallback ---
 def call_groq_agent(client, prompt):
-    completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You are an elite hedge fund quantitative analyst specializing in Gold (XAU/USD)."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2,
-        max_tokens=250
-    )
-    return completion.choices[0].message.content
+    candidate_models = [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "mixtral-8x7b-32768"
+    ]
+    last_err = None
+    for model_name in candidate_models:
+        try:
+            completion = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are an elite quantitative analyst specializing in Gold (XAU/USD)."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                max_tokens=250
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err
 
 # --- Trigger Analysis ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
@@ -101,7 +113,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 {
                     "name": "Agent 1: Technical & SMC Analyst",
                     "avatar": "📊",
-                    "prompt": f"Analyze XAU/USD market structure (BOS/CHoCH), Order Blocks, and Fair Value Gaps (FVG). Context: {context_info}. Be concise, institutional, and direct under 90 words."
+                    "prompt": f"Analyze XAU/USD market structure (BOS/CHoCH), Order Blocks, and Fair Value Gaps (FVG). Context: {context_info}. Be concise, institutional, and direct under 80 words."
                 },
                 {
                     "name": "Agent 2: Macro & Treasury Analyst",
@@ -137,10 +149,10 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                         "avatar": ag["avatar"],
                         "content": txt
                     })
-                    time.sleep(0.5)
+                    time.sleep(0.3)
 
             # Agent 5: Master Risk Manager
-            with st.spinner("Agent 5 (Chief Decision Officer) final trade nikaal raha hai..."):
+            with st.spinner("Agent 5 (Chief Decision Officer) final trade setup nikaal raha hai..."):
                 chief_prompt = f"""
                 You are Agent 5, Chief Decision & Risk Officer.
                 Synthesize all 4 specialist reports:
