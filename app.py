@@ -68,22 +68,6 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
-# --- Auto-detect Active Model ---
-def find_working_model(client):
-    try:
-        all_models = [m.name.split("/")[-1] for m in client.models.list()]
-        # First preference: any flash model
-        for m in all_models:
-            if "flash" in m.lower() and "gemini" in m.lower():
-                return m
-        # Second preference: any gemini model
-        for m in all_models:
-            if "gemini" in m.lower():
-                return m
-    except Exception:
-        pass
-    return "gemini-2.0-flash"
-
 # --- Main Trigger Button ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     if not api_key:
@@ -91,10 +75,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     else:
         try:
             client = genai.Client(api_key=api_key)
-
-            # Auto-detect which model is active on this account
-            active_model = find_working_model(client)
-            st.toast(f"🤖 Connected to model: {active_model}")
+            active_model = "gemini-3.8-flash"
 
             context_info = f"""
             Market: Gold (XAU/USD)
