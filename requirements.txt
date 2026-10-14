@@ -2,3 +2,4 @@ streamlit
 groq
 yfinance
 pandas
+streamlit-components-v1
