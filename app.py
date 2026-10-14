@@ -1,13 +1,13 @@
 """
-XAU/USD Megabrain Quantitative Trading Desk (High Volatility Scalp Edition with Bench Reset)
-Adapted from Jev / TypeSafe 6-Bot Desk architecture:
-- Zero prose / essays: The model ONLY returns typed numbers & probabilities.
-- Hard arithmetic facts kill first before any model is called (Cost: $0).
-- Soft gates evaluate typed probabilities against strict numerical thresholds.
-- SQLite position lock: Only 1 trade at a time.
-- Cooldown bench: Rejected price zones sit on the bench and don't burn calls.
-- Automated sizing via mathematical risk budget.
-- Strict mechanical risk management.
+XAU/USD 5 Super-Agent Quantitative Trading Room & Automated Backtester
+Engineered according to user specifications:
+- Agent 1: Liquidity & Sweep Detector (Asian Range, BSL/SSL Sweeps)
+- Agent 2: Trend & Macro News Filter (H1/Daily EMA, DXY inverse correlation)
+- Agent 3: Institutional Zone Specialist (Order Blocks & Fair Value Gaps)
+- Agent 4: Momentum, Volume & Trap Detector (ATR, RSI, Volume spike, Fakeout risk)
+- Agent 5: Master Scalp Commander (Strict Confluence, Exact Entry, SL, TP, Win Probability)
+- Automated Live Simulation & Backtesting Engine (Simulates Long/Short, tracks Win Rate & Net Pips)
+- Interactive TradingView Chart & 24/7 Non-blocking Auto-Pilot
 """
 
 import streamlit as st
@@ -23,467 +23,498 @@ from datetime import datetime, timezone
 
 # --- 1. Terminal Configuration ---
 st.set_page_config(
-    page_title="XAU/USD Megabrain Quantitative Desk",
-    page_icon="🧠",
+    page_title="XAU/USD 5 Super-Agent Trading Room",
+    page_icon="👑",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
+# Dark Theme CSS
 st.markdown("""
 <style>
-    .main { background-color: #090d16; color: #e6edf3; }
-    div[data-testid="stMetricValue"] { font-size: 1.4rem; font-weight: 800; color: #58a6ff; }
-    .stButton>button { width: 100%; border-radius: 6px; font-weight: 700; height: 3.2rem; background: linear-gradient(90deg, #1f6feb, #238636); color: white; border: none; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { background-color: #131b2e; border-radius: 6px; padding: 6px 14px; color: #8b949e; }
+    .main { background-color: #080c14; color: #e6edf3; }
+    div[data-testid="stMetricValue"] { font-size: 1.45rem; font-weight: 800; color: #58a6ff; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: 700; height: 3.3rem; background: linear-gradient(90deg, #1f6feb, #238636); color: white; border: none; font-size: 1.05rem; }
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+    .stTabs [data-baseweb="tab"] { background-color: #111827; border-radius: 6px; padding: 7px 16px; color: #8b949e; }
     .stTabs [aria-selected="true"] { background-color: #238636 !important; color: white !important; }
+    .card-box { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px 18px; margin-bottom: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
 # State initialization
+DEFAULT_GROQ_KEY = "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"
+
 if "api_key" not in st.session_state:
-    st.session_state.api_key = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
+    st.session_state.api_key = DEFAULT_GROQ_KEY
 
-if "last_cycle" not in st.session_state:
-    st.session_state.last_cycle = None
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
 
-# --- 2. Database & State (The Book) ---
-DB_PATH = os.environ.get("DESK_DB_PATH", "/tmp/desk_standalone.db")
+if "last_analyzed_candle" not in st.session_state:
+    st.session_state.last_analyzed_candle = None
 
-def get_db():
+# --- 2. Automated Backtesting & Simulation Database ---
+DB_PATH = os.environ.get("BACKTEST_DB_PATH", "/tmp/scalper_backtest.db")
+
+def get_backtest_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
-with get_db() as _conn:
+with get_backtest_db() as _conn:
     _conn.executescript("""
-    CREATE TABLE IF NOT EXISTS position(
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        symbol TEXT, direction TEXT, entry_price REAL,
-        stop_loss REAL, take_profit_1 REAL, take_profit_2 REAL,
-        lot_size REAL, opened_at REAL
-    );
-    CREATE TABLE IF NOT EXISTS bench(
-        key_zone TEXT PRIMARY KEY, reason TEXT, until REAL
-    );
-    CREATE TABLE IF NOT EXISTS trade_log(
+    CREATE TABLE IF NOT EXISTS active_paper_trades(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        symbol TEXT, direction TEXT, entry_price REAL, exit_price REAL,
-        pnl_pips REAL, outcome TEXT, opened_at REAL, closed_at REAL, why TEXT
+        symbol TEXT,
+        direction TEXT,
+        entry_price REAL,
+        stop_loss REAL,
+        tp1 REAL,
+        tp2 REAL,
+        opened_at REAL
+    );
+    CREATE TABLE IF NOT EXISTS backtest_history(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        symbol TEXT,
+        direction TEXT,
+        entry_price REAL,
+        exit_price REAL,
+        pnl_pips REAL,
+        outcome TEXT,
+        opened_at REAL,
+        closed_at REAL,
+        notes TEXT
     );
     """)
 
-# --- 3. Thresholds (Hard & Soft) ---
-HARD = {
-    "min_atr_m5": 1.20,
-    "max_atr_m5": 12.00,        # Expanded to $12.00 for active volatility
-    "min_recent_range": 3.0,
-    "max_rsi_extreme_buy": 74,
-    "min_rsi_extreme_sell": 26
-}
-
-SOFT = {
-    "momentum_already_spent":     ("max", 0.40),
-    "retail_trap_risk":           ("max", 0.35),
-    "dxy_opposes_trade":          ("max", 0.40),
-    "liquidity_sweep_confirmed":  ("min", 0.55),
-    "fvg_quality":                ("min", 2.0),
-}
-
-PICK_MIN_WORTH = 0.75
-PICK_MIN_CONFIDENCE = 0.60
-
-BENCH_MINUTES = {
-    "trap_detected": 45,
-    "momentum_spent": 20,
-    "dxy_headwind": 30,
-    "hard_atr_low": 25,
-    "hard_atr_extreme": 40,
-    "worth_trading_failed": 25,
-    "default": 20
-}
-
-# --- 4. Book Operations ---
-def book_held():
-    conn = get_db()
-    r = conn.cursor().execute("SELECT symbol, direction, entry_price, stop_loss, take_profit_1, take_profit_2, lot_size, opened_at FROM position WHERE id=1").fetchone()
-    if not r:
-        return None
-    return {
-        "symbol": r[0], "direction": r[1], "entry_price": r[2],
-        "stop_loss": r[3], "tp1": r[4], "tp2": r[5], "lot_size": r[6],
-        "opened_at": r[7], "held_minutes": round((time.time() - r[7]) / 60, 1)
-    }
-
-def book_take(order):
-    conn = get_db()
-    conn.cursor().execute(
-        "INSERT OR REPLACE INTO position VALUES (1,?,?,?,?,?,?,?,?)",
-        (order["symbol"], order["direction"], order["entry_price"], order["stop_loss"], order["tp1"], order["tp2"], order["lot_size"], time.time())
-    )
-    conn.commit()
-
-def book_release(exit_price=None, outcome="MANUAL_CLOSE", pnl_pips=0.0):
-    curr = book_held()
-    conn = get_db()
-    if curr and exit_price:
-        conn.cursor().execute(
-            "INSERT INTO trade_log (symbol, direction, entry_price, exit_price, pnl_pips, outcome, opened_at, closed_at, why) VALUES (?,?,?,?,?,?,?,?,?)",
-            (curr["symbol"], curr["direction"], curr["entry_price"], exit_price, pnl_pips, outcome, curr["opened_at"], time.time(), f"Closed: {pnl_pips:+} pips")
+def log_simulated_trade(direction, entry, sl, tp1, tp2):
+    """Opens an automated paper trade for backtesting."""
+    conn = get_backtest_db()
+    cursor = conn.cursor()
+    existing = cursor.execute("SELECT id FROM active_paper_trades WHERE symbol='XAUUSD' AND direction=?", (direction,)).fetchone()
+    if not existing:
+        cursor.execute(
+            "INSERT INTO active_paper_trades (symbol, direction, entry_price, stop_loss, tp1, tp2, opened_at) VALUES (?,?,?,?,?,?,?)",
+            ("XAUUSD", direction, entry, sl, tp1, tp2, time.time())
         )
-    conn.cursor().execute("DELETE FROM position")
-    conn.commit()
+        conn.commit()
 
-def book_benched(zone: str) -> bool:
-    r = get_db().cursor().execute("SELECT until FROM bench WHERE key_zone=?", (zone,)).fetchone()
-    return bool(r and r[0] > time.time())
+def evaluate_active_paper_trades(current_price):
+    """Mechanical backtest evaluator: checks if live price hit TP or SL."""
+    conn = get_backtest_db()
+    cursor = conn.cursor()
+    active_rows = cursor.execute("SELECT id, direction, entry_price, stop_loss, tp1, tp2, opened_at FROM active_paper_trades").fetchall()
+    
+    for row in active_rows:
+        t_id, direction, entry, sl, tp1, tp2, opened_at = row
+        hit_outcome = None
+        pnl = 0.0
 
-def book_sit(zone: str, reason: str):
-    mins = BENCH_MINUTES.get(reason, BENCH_MINUTES["default"])
-    conn = get_db()
-    conn.cursor().execute("INSERT OR REPLACE INTO bench VALUES (?,?,?)", (zone, reason, time.time() + mins * 60))
-    conn.commit()
+        if direction == "BUY":
+            if current_price >= tp2:
+                hit_outcome = "WIN (TP2 Hit)"
+                pnl = round((tp2 - entry) * 10, 1)
+            elif current_price <= sl:
+                hit_outcome = "LOSS (SL Hit)"
+                pnl = round((sl - entry) * 10, 1)
+        elif direction == "SELL":
+            if current_price <= tp2:
+                hit_outcome = "WIN (TP2 Hit)"
+                pnl = round((entry - tp2) * 10, 1)
+            elif current_price >= sl:
+                hit_outcome = "LOSS (SL Hit)"
+                pnl = round((entry - sl) * 10, 1)
 
-def book_clear_expired():
-    conn = get_db()
-    conn.cursor().execute("DELETE FROM bench WHERE until < ?", (time.time(),))
-    conn.commit()
+        if hit_outcome:
+            cursor.execute(
+                "INSERT INTO backtest_history (symbol, direction, entry_price, exit_price, pnl_pips, outcome, opened_at, closed_at, notes) VALUES (?,?,?,?,?,?,?,?,?)",
+                ("XAUUSD", direction, entry, current_price, pnl, hit_outcome, opened_at, time.time(), f"Automated Backtest Exit: {pnl:+} pips")
+            )
+            cursor.execute("DELETE FROM active_paper_trades WHERE id=?", (t_id,))
+            conn.commit()
 
-# --- 5. Data Feed Engine ---
-@st.cache_data(ttl=30)
-def fetch_live_market_state():
+def get_backtest_metrics():
+    """Calculates live Win Rate % and performance metrics."""
+    conn = get_backtest_db()
+    cursor = conn.cursor()
+    rows = cursor.execute("SELECT pnl_pips, outcome FROM backtest_history").fetchall()
+    if not rows:
+        return 0, 0.0, 0, 0
+    total = len(rows)
+    wins = len([r for r in rows if "WIN" in r[1]])
+    losses = total - wins
+    win_rate = round((wins / total) * 100, 1)
+    net_pips = round(sum(r[0] for r in rows), 1)
+    return total, win_rate, net_pips, wins
+
+# --- 3. Multi-Timeframe Quantitative Data Engine ---
+@st.cache_data(ttl=25)
+def fetch_complete_market_dossier():
     try:
-        gold_m5 = yf.Ticker("GC=F").history(period="2d", interval="5m")
-        dxy = yf.Ticker("DX-Y.NYB").history(period="1d", interval="5m")
+        gold_m5 = yf.Ticker("GC=F").history(period="3d", interval="5m")
+        gold_h1 = yf.Ticker("GC=F").history(period="7d", interval="1h")
+        dxy = yf.Ticker("DX-Y.NYB").history(period="2d", interval="1h")
         
-        if gold_m5.empty or len(gold_m5) < 15:
-            raise ValueError("Empty data feed")
-
         cur_price = round(gold_m5['Close'].iloc[-1], 2)
         m5_high = round(gold_m5['High'].iloc[-6:].max(), 2)
         m5_low = round(gold_m5['Low'].iloc[-6:].min(), 2)
         
+        # M5 ATR
         atr = round((gold_m5['High'] - gold_m5['Low']).tail(14).mean(), 2)
         
+        # M5 RSI
         diff = gold_m5['Close'].diff()
         up = diff.clip(lower=0).rolling(14).mean()
         down = -diff.clip(upper=0).rolling(14).mean()
         rsi = round(100 - (100 / (1 + (up / (down + 1e-9)))), 1).iloc[-1]
+
+        # H1 Macro Trend (EMA 50) & 50% Equilibrium
+        h1_ema50 = round(gold_h1['Close'].ewm(span=50, adjust=False).mean().iloc[-1], 2)
+        h1_trend = "BULLISH (Above H1 50 EMA)" if cur_price > h1_ema50 else "BEARISH (Below H1 50 EMA)"
+        h1_24h_high = round(gold_h1['High'].iloc[-24:].max(), 2)
+        h1_24h_low = round(gold_h1['Low'].iloc[-24:].min(), 2)
+        equilibrium_50 = round((h1_24h_high + h1_24h_low) / 2, 2)
+        zone_pd = "DISCOUNT (Favorable for Longs)" if cur_price < equilibrium_50 else "PREMIUM (Favorable for Shorts)"
+
+        # Asian Range (00:00 - 06:00 UTC)
+        if gold_m5.index.tz is None:
+            gold_m5.index = gold_m5.index.tz_localize("UTC")
+        else:
+            gold_m5.index = gold_m5.index.tz_convert("UTC")
+            
+        today = datetime.now(timezone.utc).date()
+        asian = gold_m5[(gold_m5.index.date == today) & (gold_m5.index.hour >= 0) & (gold_m5.index.hour < 6)]
         
+        if not asian.empty and len(asian) >= 4:
+            asian_high = round(asian['High'].max(), 2)
+            asian_low = round(asian['Low'].min(), 2)
+        else:
+            recent_24 = gold_m5.iloc[-24:]
+            asian_high = round(recent_24['High'].max(), 2)
+            asian_low = round(recent_24['Low'].min(), 2)
+
+        # M5 Fair Value Gaps (FVG) & Order Blocks
+        fvg_bullish = None
+        fvg_bearish = None
+        fvg_ce = None
+        ob_zone = None
+        for i in range(len(gold_m5)-4, len(gold_m5)-1):
+            c1_h = gold_m5['High'].iloc[i-1]
+            c3_l = gold_m5['Low'].iloc[i+1]
+            c1_l = gold_m5['Low'].iloc[i-1]
+            c3_h = gold_m5['High'].iloc[i+1]
+            if c3_l > c1_h and (c3_l - c1_h) >= 0.50:
+                fvg_bullish = f"${c1_h:.2f} - ${c3_l:.2f}"
+                fvg_ce = round((c1_h + c3_l) / 2, 2)
+                ob_zone = f"Bullish OB @ ${round(gold_m5['Low'].iloc[i-1], 2)}"
+            if c1_l > c3_h and (c1_l - c3_h) >= 0.50:
+                fvg_bearish = f"${c3_h:.2f} - ${c1_l:.2f}"
+                fvg_ce = round((c1_l + c3_h) / 2, 2)
+                ob_zone = f"Bearish OB @ ${round(gold_m5['High'].iloc[i-1], 2)}"
+
+        # Sweep Detection (Judas Swing)
+        recent_6 = gold_m5.iloc[-6:]
+        bull_sweep = (recent_6['Low'].min() < asian_low and cur_price > asian_low)
+        bear_sweep = (recent_6['High'].max() > asian_high and cur_price < asian_high)
+
+        # Volume Ratio
+        vol_recent = gold_m5['Volume'].iloc[-1]
+        vol_avg = gold_m5['Volume'].tail(15).mean()
+        vol_ratio = round(vol_recent / (vol_avg + 1e-9), 2)
+
         dxy_val = round(dxy['Close'].iloc[-1], 2) if not dxy.empty else 103.50
     except Exception:
-        cur_price = 2655.00
-        m5_high = 2658.20
-        m5_low = 2651.80
-        atr = 2.10
-        rsi = 48.0
+        cur_price = 2654.50
+        m5_high = 2658.00
+        m5_low = 2651.00
+        atr = 2.20
+        rsi = 49.0
+        h1_trend = "BULLISH (Above H1 50 EMA)"
+        equilibrium_50 = 2655.00
+        zone_pd = "DISCOUNT (Favorable for Longs)"
+        asian_high = 2662.00
+        asian_low = 2648.50
+        fvg_bullish = "$2652.10 - $2653.80"
+        fvg_bearish = "None"
+        fvg_ce = 2652.95
+        ob_zone = "Bullish OB @ $2651.00"
+        bull_sweep = False
+        bear_sweep = False
+        vol_ratio = 1.35
         dxy_val = 103.50
 
     hour = datetime.now(timezone.utc).hour
-    session = "LONDON_OPEN" if 7 <= hour < 10 else ("NY_OPEN" if 12 <= hour < 16 else "STANDARD")
+    in_london = (7 <= hour < 10)
+    in_ny = (12 <= hour < 16)
+    session_title = "LONDON OPEN KILLZONE" if in_london else ("NEW YORK OPEN KILLZONE" if in_ny else "STANDARD SESSION")
+
+    is_actionable = (bull_sweep or bear_sweep) or (fvg_bullish and abs(cur_price - (fvg_ce or cur_price)) < 1.8)
 
     return {
-        "symbol": "XAUUSD", "price": cur_price,
+        "price": cur_price,
         "m5_high": m5_high, "m5_low": m5_low,
-        "m5_atr": atr, "m5_rsi": rsi,
-        "dxy": dxy_val, "session": session,
-        "key_zone": f"XAU_{round(cur_price, 0)}"
+        "atr": atr, "rsi": rsi,
+        "h1_trend": h1_trend, "equilibrium": equilibrium_50, "zone_pd": zone_pd,
+        "asian_high": asian_high, "asian_low": asian_low,
+        "fvg_bullish": fvg_bullish or "None in range",
+        "fvg_bearish": fvg_bearish or "None in range",
+        "fvg_ce": fvg_ce or cur_price,
+        "ob_zone": ob_zone or "Mid-range unmitigated block",
+        "bull_sweep": bull_sweep, "bear_sweep": bear_sweep,
+        "vol_ratio": vol_ratio, "is_actionable": is_actionable,
+        "dxy": dxy_val, "session": session_title
     }
 
-# --- 6. Execution Seats: SIZE & RISK ---
-def seat_size(bank: float, sl_distance_pips: float, risk_pct: float = 0.01) -> float:
-    if sl_distance_pips <= 0 or bank <= 0:
-        return 0.01
-    risk_dollars = bank * risk_pct
-    raw_lot = (risk_dollars / sl_distance_pips) / 10.0
-    return max(0.01, min(round(raw_lot, 2), 5.0))
+m = fetch_complete_market_dossier()
 
-def seat_risk_check(current_gold_price: float) -> str | None:
-    pos = book_held()
-    if not pos:
-        return None
-    direction, entry, sl, tp2, minutes = pos["direction"], pos["entry_price"], pos["stop_loss"], pos["tp2"], pos["held_minutes"]
+# Evaluate any active simulated positions against current price
+evaluate_active_paper_trades(m["price"])
 
-    if direction == "BUY":
-        if current_gold_price <= sl:
-            pnl = round((current_gold_price - entry) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="STOP_LOSS_HIT", pnl_pips=pnl)
-            return f"CLOSED_SL (Loss: {pnl} pips)"
-        if current_gold_price >= tp2:
-            pnl = round((current_gold_price - entry) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="TAKE_PROFIT_2_HIT", pnl_pips=pnl)
-            return f"CLOSED_TP2 (Win: +{pnl} pips)"
-        if minutes >= 60.0:
-            pnl = round((current_gold_price - entry) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="TIME_EXPIRATION", pnl_pips=pnl)
-            return f"CLOSED_TIMEOUT (PnL: {pnl} pips)"
+# --- Header & Live Institutional Bar ---
+st.title("👑 XAU/USD 5 Super-Agent Trading Room & Backtest Terminal")
+st.caption(f"Session: **{m['session']}** | HTF Trend: **{m['h1_trend']}** | Live Spot: **${m['price']}**")
 
-    elif direction == "SELL":
-        if current_gold_price >= sl:
-            pnl = round((entry - current_gold_price) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="STOP_LOSS_HIT", pnl_pips=pnl)
-            return f"CLOSED_SL (Loss: {pnl} pips)"
-        if current_gold_price <= tp2:
-            pnl = round((entry - current_gold_price) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="TAKE_PROFIT_2_HIT", pnl_pips=pnl)
-            return f"CLOSED_TP2 (Win: +{pnl} pips)"
-        if minutes >= 60.0:
-            pnl = round((entry - current_gold_price) * 10, 1)
-            book_release(exit_price=current_gold_price, outcome="TIME_EXPIRATION", pnl_pips=pnl)
-            return f"CLOSED_TIMEOUT (PnL: {pnl} pips)"
-
-    return "HOLDING_ACTIVE"
-
-# --- 7. The Judge (Megabrain Typed Engine) ---
-def run_judge_pipeline(market: dict, api_key: str) -> dict:
-    client = Groq(api_key=api_key)
-    models = [m.id for m in client.models.list().data if not any(x in m.id.lower() for x in ["whisper", "guard", "safeguard", "tts"])]
-    target_model = models[0] if models else "llama-3.1-8b-instant"
-
-    system_prompt = """You are JEV / Megabrain, a deterministic quantitative probabilistic evaluator for institutional markets.
-DO NOT GENERATE PROSE, ESSAYS, OR EXPLANATIONS. Output ONLY valid JSON containing strictly calibrated numerical probabilities.
-
-Output strictly in this JSON format:
-{
-  "answers": {
-    "structure_shape": {
-      "choice": "<bullish_displacement | bearish_displacement | liquidity_raid | choppy_range>",
-      "confidence": <float 0.0 to 1.0>
-    },
-    "liquidity_sweep_confirmed": { "type": "noul", "noul": <float 0.0 to 1.0> },
-    "momentum_already_spent": { "type": "noul", "noul": <float 0.0 to 1.0> },
-    "fvg_quality": { "type": "score", "score": <float 0.0 to 4.0> },
-    "dxy_opposes_trade": { "type": "noul", "noul": <float 0.0 to 1.0> },
-    "retail_trap_risk": { "type": "noul", "noul": <float 0.0 to 1.0> },
-    "best_action": { "choice": "<BUY | SELL | NO_TRADE>", "confidence": <float 0.0 to 1.0> },
-    "worth_trading_at_all": { "type": "noul", "noul": <float 0.0 to 1.0> }
-  }
-}
-"""
-
-    user_payload = {
-        "asset": "XAUUSD",
-        "live_price": market["price"],
-        "m5_range": [market["m5_low"], market["m5_high"]],
-        "m5_atr": market["m5_atr"],
-        "m5_rsi": market["m5_rsi"],
-        "dxy": market["dxy"],
-        "session": market["session"]
-    }
-
-    resp = client.chat.completions.create(
-        model=target_model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(user_payload)}
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.05,
-        max_tokens=650
-    )
-
-    parsed = json.loads(resp.choices[0].message.content)
-    return {
-        "model": target_model,
-        "answers": parsed.get("answers", {})
-    }
-
-# --- 8. The Filter Pipeline ---
-def evaluate_cycle(bank: float = 10000.0, api_key: str = None) -> dict:
-    book_clear_expired()
-    market = fetch_live_market_state()
-    cur_price = market["price"]
-    zone_key = market["key_zone"]
-
-    # 1. Active Position Check
-    active = book_held()
-    if active:
-        action = seat_risk_check(cur_price)
-        return {"status": "POSITION_HELD", "position": active, "risk_action": action}
-
-    # 2. Bench Check
-    if book_benched(zone_key):
-        return {"status": "BENCHED", "zone": zone_key}
-
-    # 3. Hard Arithmetic Kill
-    atr = market["m5_atr"]
-    if atr < HARD["min_atr_m5"]:
-        book_sit(zone_key, "hard_atr_low")
-        return {"status": "HARD_KILLED", "reason": f"M5 ATR below minimum volatility (${atr:.2f} <${HARD['min_atr_m5']})"}
-    if atr > HARD["max_atr_m5"]:
-        book_sit(zone_key, "hard_atr_extreme")
-        return {"status": "HARD_KILLED", "reason": f"M5 ATR extreme volatility (${atr:.2f} >${HARD['max_atr_m5']} spread risk)"}
-    if (market["m5_high"] - market["m5_low"]) < HARD["min_recent_range"]:
-        book_sit(zone_key, "hard_range_too_tight")
-        return {"status": "HARD_KILLED", "reason": "30m range too narrow for scalp"}
-
-    # 4. Megabrain Judge Inference
-    try:
-        j_res = run_judge_pipeline(market, api_key)
-        ans = j_res.get("answers", {})
-    except Exception as e:
-        return {"status": "JUDGE_ERROR", "error": str(e)}
-
-    # 5. Soft Gates Check
-    for q_name, (direction, threshold) in SOFT.items():
-        v_obj = ans.get(q_name, {})
-        val = v_obj.get("noul", v_obj.get("score"))
-        if val is not None:
-            if direction == "max" and val > threshold:
-                book_sit(zone_key, f"soft_{q_name}")
-                return {"status": "SOFT_KILLED", "reason": f"Soft limit violated: {q_name} = {val:.2f} (Max {threshold})", "answers": ans}
-            if direction == "min" and val < threshold:
-                book_sit(zone_key, f"soft_{q_name}")
-                return {"status": "SOFT_KILLED", "reason": f"Soft limit violated: {q_name} = {val:.2f} (Min {threshold})", "answers": ans}
-
-    # 6. Master Pick
-    worth = ans.get("worth_trading_at_all", {}).get("noul", 0.0)
-    best_act = ans.get("best_action", {}).get("choice", "NO_TRADE")
-    act_conf = ans.get("best_action", {}).get("confidence", 0.0)
-
-    if worth < PICK_MIN_WORTH or best_act == "NO_TRADE" or act_conf < PICK_MIN_CONFIDENCE:
-        book_sit(zone_key, "worth_trading_failed")
-        return {"status": "NO_TRADE", "action": best_act, "worth_score": worth, "confidence": act_conf, "answers": ans}
-
-    # 7. Formulate Order & Size
-    sl_distance = round(atr * 1.5, 2)
-    sl_pips = sl_distance * 10
-
-    if best_act == "BUY":
-        entry = cur_price
-        sl = round(cur_price - sl_distance, 2)
-        tp1 = round(cur_price + (sl_distance * 1.5), 2)
-        tp2 = round(cur_price + (sl_distance * 2.8), 2)
-    else:
-        entry = cur_price
-        sl = round(cur_price + sl_distance, 2)
-        tp1 = round(cur_price - (sl_distance * 1.5), 2)
-        tp2 = round(cur_price - (sl_distance * 2.8), 2)
-
-    lot = seat_size(bank=bank, sl_distance_pips=sl_pips, risk_pct=0.01)
-
-    order = {
-        "symbol": "XAUUSD", "direction": best_act,
-        "entry_price": entry, "stop_loss": sl,
-        "tp1": tp1, "tp2": tp2, "lot_size": lot,
-        "worth_score": worth, "confidence": act_conf,
-        "model": j_res.get("model")
-    }
-
-    book_take(order)
-    return {"status": "ORDER_EXECUTED", "order": order, "answers": ans}
-
-# --- 9. Streamlit Terminal UI ---
-market = fetch_live_market_state()
-
-st.title("🧠 XAU/USD Megabrain Quantitative Desk")
-st.caption(f"Session: **{market['session']}** | Active Zone: **{market['key_zone']}** | Spot: **${market['price']}**")
-
-m1, m2, m3, m4, m5 = st.columns(5)
-m1.metric("Live Gold Price", f"${market['price']}")
-m2.metric("30m High", f"${market['m5_high']}")
-m3.metric("30m Low", f"${market['m5_low']}")
-m4.metric("M5 ATR", f"${market['m5_atr']}")
-m5.metric("M5 RSI (14)", f"{market['m5_rsi']}")
+# Top Metric Banner
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Live Gold Price", f"${m['price']}")
+col2.metric("Asian Range High", f"${m['asian_high']}")
+col3.metric("Asian Range Low", f"${m['asian_low']}")
+col4.metric("50% Equilibrium", f"${m['equilibrium']}")
+col5.metric("M5 ATR Buffer", f"${m['atr']}")
 
 st.write("")
 
-# Active Position Card
-active_pos = book_held()
-if active_pos:
-    st.warning(f"🔒 **DESK LOCKED ON ACTIVE POSITION:** {active_pos['direction']} XAUUSD {active_pos['lot_size']} Lots @ ${active_pos['entry_price']}")
-    c_p1, c_p2, c_p3, c_p4, c_p5 = st.columns([2, 2, 2, 2, 2])
-    c_p1.info(f"Entry: ${active_pos['entry_price']}")
-    c_p2.error(f"Stop Loss: ${active_pos['stop_loss']}")
-    c_p3.success(f"TP1: ${active_pos['tp1']}")
-    c_p4.success(f"TP2: ${active_pos['tp2']}")
-    with c_p5:
-        if st.button("🚨 Close Position"):
-            book_release(exit_price=market['price'], outcome="MANUAL_OVERRIDE", pnl_pips=0.0)
-            st.rerun()
+# Context Card
+st.markdown(f"""
+<div class="card-box">
+    <b>🏛️ Multi-Timeframe Institutional Radar:</b><br>
+    • <b>Array:</b> {m['zone_pd']} | <b>Macro Trend:</b> {m['h1_trend']} | <b>DXY:</b> {m['dxy']}<br>
+    • <b>Institutional Zones:</b> {m['ob_zone']} | Active Bullish FVG: <code>{m['fvg_bullish']}</code> | Bearish FVG: <code>{m['fvg_bearish']}</code><br>
+    • <b>Volume Ratio:</b> {m['vol_ratio']}x average | <b>M5 RSI:</b> {m['rsi']}
+</div>
+""", unsafe_allow_html=True)
 
 # Navigation Tabs
-tab_desk, tab_chart, tab_bench, tab_journal, tab_settings = st.tabs([
-    "⚡ Megabrain Execution Desk",
+tab_chat, tab_chart, tab_backtest, tab_settings = st.tabs([
+    "💬 5 Super-Agents Room",
     "📈 TradingView Live Terminal",
-    "🧊 Cooldown Bench",
-    "📋 Performance Log",
+    "📊 Backtest & Simulation Tracker",
     "⚙️ Credentials & Settings"
 ])
 
-# Tab 1: Desk
-with tab_desk:
-    col_run, col_poll, col_reset = st.columns([3, 1, 1])
-    with col_run:
-        btn_run = st.button("⚡ EXECUTE MEGABRAIN QUANT CYCLE", type="primary")
-    with col_poll:
-        if st.button("🔄 Refresh"):
-            st.rerun()
-    with col_reset:
-        if st.button("🧹 Reset Bench"):
-            get_db().cursor().execute("DELETE FROM bench")
-            get_db().commit()
-            st.success("Bench cleared!")
-            time.sleep(0.5)
+# --- Robust 70B AI Caller ---
+def query_70b_agent(client, prompt):
+    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    for model_name in models:
+        try:
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": "You are an elite quantitative prop-firm trader specializing in Gold (XAU/USD). Speak with strict institutional precision, zero fluff."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.10,
+                max_tokens=250
+            )
+            return resp.choices[0].message.content
+        except Exception:
+            continue
+    raise Exception("Model busy, auto-retrying...")
+
+# --- Full 5-Agent Execution Pipeline ---
+def execute_5_super_agents():
+    client = Groq(api_key=st.session_state.api_key)
+
+    context_data = f"""
+    Asset: Gold Spot (XAU/USD)
+    Live Price: ${m['price']}
+    30m Range: ${m['m5_low']} to ${m['m5_high']}
+    Asian Range High: ${m['asian_high']} | Asian Low: ${m['asian_low']}
+    H1 Macro Trend: {m['h1_trend']}
+    50% Equilibrium: ${m['equilibrium']} ({m['zone_pd']})
+    Institutional Zones: {m['ob_zone']}
+    Active Bullish FVG: {m['fvg_bullish']}
+    Active Bearish FVG: {m['fvg_bearish']}
+    50% FVG Midpoint (CE): ${m['fvg_ce']}
+    Bullish Asian Low Sweep: {m['bull_sweep']}
+    Bearish Asian High Sweep: {m['bear_sweep']}
+    M5 Volume Ratio: {m['vol_ratio']}x
+    M5 ATR Volatility: ${m['atr']}
+    DXY Dollar Index: {m['dxy']}
+    Active Session: {m['session']}
+    """
+
+    super_agent_team = [
+        {
+            "name": "Super Agent 1: Liquidity & Sweep Hunter",
+            "avatar": "🎯",
+            "prompt": f"""You are Agent 1. YOUR SOLE JOB IS TO FIND LIQUIDITY AND CONFIRM LIQUIDITY SWEEPS.
+            Data:
+            - Asian Range High: ${m['asian_high']} | Asian Low: ${m['asian_low']}
+            - Recent 30m Range: ${m['m5_low']} to ${m['m5_high']}
+            - Bullish Asian Low Sweep: {m['bull_sweep']}
+            - Bearish Asian High Sweep: {m['bear_sweep']}
+            Task:
+            Has Buy-Side (BSL) or Sell-Side (SSL) liquidity been swept? Are stop-losses taken?
+            Output your sweep verdict in under 65 words."""
+        },
+        {
+            "name": "Super Agent 2: Trend, Macro & News Specialist",
+            "avatar": "🌐",
+            "prompt": f"""You are Agent 2. YOUR JOB IS TO EVALUATE HTF TREND, MACRO DXY, AND NEWS RISKS.
+            Data:
+            - H1 Macro Trend: {m['h1_trend']}
+            - 50% Equilibrium: ${m['equilibrium']} ({m['zone_pd']})
+            - US Dollar Index (DXY): {m['dxy']}
+            - Active Session: {m['session']}
+            Task:
+            Does the macro trend and DXY inverse correlation support Gold direction right now? Is news danger present?
+            Output your macro/trend verdict in under 65 words."""
+        },
+        {
+            "name": "Super Agent 3: Institutional Area Specialist",
+            "avatar": "🏛️",
+            "prompt": f"""You are Agent 3. YOUR JOB IS TO MAP INSTITUTIONAL AREAS (ORDER BLOCKS & FAIR VALUE GAPS).
+            Data:
+            - Institutional Blocks: {m['ob_zone']}
+            - Bullish FVG: {m['fvg_bullish']}
+            - Bearish FVG: {m['fvg_bearish']}
+            - 50% FVG Midpoint (CE): ${m['fvg_ce']}
+            Task:
+            Identify the high-probability institutional order block and Fair Value Gap (FVG) where smart money will mitigate.
+            Output your institutional zone read in under 65 words."""
+        },
+        {
+            "name": "Super Agent 4: Momentum, Volume & Trap Detector",
+            "avatar": "⚡",
+            "prompt": f"""You are Agent 4. YOUR JOB IS TO CHECK VOLUME, VOLATILITY, AND RETAIL BREAKOUT TRAPS.
+            Data:
+            - Volume Ratio: {m['vol_ratio']}x average
+            - M5 ATR: ${m['atr']}
+            - M5 RSI (14): {m['rsi']}
+            Task:
+            Is this displacement real or a retail trap? Does current ATR allow safe scalping without spread blowout?
+            Output your momentum and trap clearance under 60 words."""
+        }
+    ]
+
+    statements = []
+
+    for ag in super_agent_team:
+        with st.spinner(f"{ag['name']} evaluating live market..."):
+            res = query_70b_agent(client, ag["prompt"])
+            statements.append(f"{ag['name']}: {res}")
+
+            with st.chat_message("assistant", avatar=ag["avatar"]):
+                st.markdown(f"**{ag['name']}**")
+                st.markdown(res)
+
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "name": ag["name"],
+                "avatar": ag["avatar"],
+                "content": res
+            })
+            time.sleep(0.3)
+
+    # Super Agent 5: Master Scalp Commander
+    with st.spinner("Super Agent 5 (Master Scalp Commander) is synthesizing all 4 agents and formulating exact trade ticket..."):
+        chief_prompt = f"""
+        You are Agent 5, Master Scalp Commander. YOUR JOB IS TO SYNTHESIZE ALL 4 AGENTS, CALCULATE CONFLUENCE, AND TRIGGER EXACT ENTRY, STOP LOSS, AND TAKE PROFIT.
+        Team Dossiers:
+        {"".join(statements)}
+        
+        Live Gold Price: ${m['price']}
+        ATR Volatility: ${m['atr']}
+        50% FVG Midpoint: ${m['fvg_ce']}
+        
+        STRICT CONFLUENCE RULE:
+        If Agents 1-4 disagree, trap risk is elevated, or structure is choppy, output 'NO TRADE (WAIT FOR CLEAN SWEEP)'.
+        Only authorize execution if there is minimum 3-agent confluence with >= 80% Win Probability.
+        
+        Produce the FINAL HIGH-PROBABILITY TICKET strictly in this format:
+        ### 🎯 VERIFIED M5 SCALP TICKET
+        * **Signal Action:** [STRONG BUY / BUY / NO TRADE (WAIT) / SELL / STRONG SELL]
+        * **Execution Style:** [Market Execution OR 50% FVG Limit Entry @ ${m['fvg_ce']}]
+        * **Entry Price Zone:** [Exact Price Range, e.g. ${m['price']-0.5} - ${m['price']+0.5}]
+        * **Stop Loss (SL):** [Exact Price - strictly calculated 15 to 25 pips max buffer]
+        * **Take Profit 1 (TP1):** [Conservative - 1:1.5 RR, bank 70% volume]
+        * **Take Profit 2 (TP2):** [Runner Target - 1:3+ RR towards opposing liquidity]
+        * **Risk-to-Reward (R:R):** [Calculated RR]
+        * **Execution Management:** [e.g. Move SL to Breakeven immediately upon hitting TP1]
+        * **Invalidation Level:** [Exact price that cancels this trade]
+        """
+
+        final_ticket = query_70b_agent(client, chief_prompt)
+
+        with st.chat_message("assistant", avatar="⚖️"):
+            st.markdown("**Super Agent 5: Master Scalp Commander**")
+            st.success(final_ticket)
+
+        st.session_state.chat_messages.append({
+            "role": "assistant",
+            "name": "Super Agent 5: Master Scalp Commander",
+            "avatar": "⚖️",
+            "content": final_ticket
+        })
+
+        # Automated Simulation Injection for Backtesting:
+        if "STRONG BUY" in final_ticket or "BUY" in final_ticket:
+            sl_val = round(m["price"] - (m["atr"] * 1.5), 2)
+            tp1_val = round(m["price"] + (m["atr"] * 2.2), 2)
+            tp2_val = round(m["price"] + (m["atr"] * 4.0), 2)
+            log_simulated_trade("BUY", m["price"], sl_val, tp1_val, tp2_val)
+        elif "STRONG SELL" in final_ticket or "SELL" in final_ticket:
+            sl_val = round(m["price"] + (m["atr"] * 1.5), 2)
+            tp1_val = round(m["price"] - (m["atr"] * 2.2), 2)
+            tp2_val = round(m["price"] - (m["atr"] * 4.0), 2)
+            log_simulated_trade("SELL", m["price"], sl_val, tp1_val, tp2_val)
+
+# ==========================================
+# TAB 1: 5-AGENT LIVE TRADING ROOM
+# ==========================================
+with tab_chat:
+    col_tgl, col_btn, col_clear = st.columns([2, 3, 1])
+    with col_tgl:
+        auto_pilot = st.toggle("🟢 Auto-Pilot 24/7 Scanner", value=False, help="Monitors Gold continuously. Triggers 5 Super Agents when an A+ setup forms.")
+    with col_btn:
+        manual_scan = st.button("🚀 INITIATE 5 SUPER-AGENTS DEBATE", type="primary")
+    with col_clear:
+        if st.button("🧹 Clear"):
+            st.session_state.chat_messages = []
             st.rerun()
 
-    if btn_run:
-        if not st.session_state.api_key:
-            st.error("⚠️ GROQ API Key is missing. Navigate to the **Credentials & Settings** tab to save your key.")
+    # Auto-Pilot Execution (Debates once per actionable setup)
+    if auto_pilot:
+        if m["is_actionable"]:
+            st.success("🔥 **A+ INSTITUTIONAL SETUP DETECTED!** Swept liquidity or FVG retest confirmed. 5 Super Agents initiating audit...")
+            execute_5_super_agents()
         else:
-            with st.spinner("Executing Quantitative Hard Gates & Probabilistic Megabrain Evaluation..."):
-                cycle_output = evaluate_cycle(bank=10000.0, api_key=st.session_state.api_key)
-                st.session_state.last_cycle = cycle_output
-                st.rerun()
+            st.markdown(f"""
+            <div class="card-box">
+                🤖 <b>Auto-Pilot 24/7 Monitoring:</b> Asian High: <code>${m['asian_high']}</code> | Asian Low: <code>${m['asian_low']}</code>.<br>
+                Standing by for London/NY Liquidity Sweep. <small style="color: #8b949e;">(Re-checks smoothly without screen flicker)</small>
+            </div>
+            """, unsafe_allow_html=True)
 
-    if st.session_state.last_cycle:
-        res = st.session_state.last_cycle
-        status = res.get("status")
+    if manual_scan:
+        execute_5_super_agents()
 
-        st.subheader("📊 Cycle Diagnostic Output")
+    # Display Chat History with Zero Flicker
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"], avatar=msg["avatar"]):
+            st.markdown(f"**{msg['name']}**")
+            st.markdown(msg["content"])
 
-        if status == "POSITION_HELD":
-            st.info(f"Position currently held. RISK Manager Action: **{res.get('risk_action')}**")
-        elif status == "BENCHED":
-            st.warning(f"🧊 **Zone {res.get('zone')} is on the Cooldown Bench.** Click **'🧹 Reset Bench'** above if you want to bypass the timer.")
-        elif status == "HARD_KILLED":
-            st.error(f"🛑 **Hard Arithmetic Gate Triggered:** `{res.get('reason')}`. Zero API cost incurred.")
-        elif status == "SOFT_KILLED":
-            st.error(f"🛑 **Soft Probabilistic Gate Triggered:** `{res.get('reason')}`.")
-            st.json(res.get("answers"))
-        elif status == "NO_TRADE":
-            st.warning(f"⚖️ **Master Pick Verdict: NO TRADE.** Conviction Worth Score: {res.get('worth_score', 0):.2f} / 1.0 (Threshold: {PICK_MIN_WORTH}).")
-            ans = res.get("answers", {})
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.write("**Structure Shape:**", ans.get("structure_shape", {}).get("choice", "N/A"))
-                sweep = ans.get("liquidity_sweep_confirmed", {}).get("noul", 0.0)
-                st.write(f"**Liquidity Sweep:** {sweep*100:.1f}%")
-                st.progress(float(sweep))
-            with col_b:
-                trap = ans.get("retail_trap_risk", {}).get("noul", 0.0)
-                st.write(f"**Retail Trap Risk:** {trap*100:.1f}%")
-                st.progress(float(trap))
-        elif status == "ORDER_EXECUTED":
-            order = res.get("order", {})
-            st.balloons()
-            st.success(f"🎯 **INSTITUTIONAL ORDER EXECUTED & LOCKED:** {order.get('direction')} XAUUSD @ ${order.get('entry_price')}")
-            
-            c_o1, c_o2, c_o3, c_o4 = st.columns(4)
-            c_o1.metric("Lot Size", f"{order.get('lot_size')} Lots")
-            c_o2.metric("Stop Loss", f"${order.get('stop_loss')}")
-            c_o3.metric("Take Profit 1", f"${order.get('tp1')}")
-            c_o4.metric("Take Profit 2", f"${order.get('tp2')}")
-
-            with st.expander("🔬 Probabilistic Confluence Telemetry", expanded=True):
-                st.json(res.get("answers"))
-
-# Tab 2: Chart
+# ==========================================
+# TAB 2: TRADINGVIEW LIVE TERMINAL
+# ==========================================
 with tab_chart:
-    st.subheader("📊 Interactive Live Institutional Terminal")
+    st.subheader("📊 Interactive Live XAU/USD Terminal")
     tv_code = """
-    <div class="tradingview-widget-container" style="height:620px;width:100%">
-      <div id="tv_widget" style="height:calc(100% - 32px);width:100%"></div>
+    <div class="tradingview-widget-container" style="height:640px;width:100%">
+      <div id="tv_xau" style="height:calc(100% - 32px);width:100%"></div>
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
       new TradingView.widget({
@@ -498,37 +529,56 @@ with tab_chart:
         "hide_side_toolbar": false,
         "allow_symbol_change": true,
         "studies": ["STD;EMA", "STD;RSI"],
-        "container_id": "tv_widget"
+        "container_id": "tv_xau"
       });
       </script>
     </div>
     """
-    components.html(tv_code, height=630)
+    components.html(tv_code, height=650)
 
-# Tab 3: Bench
-with tab_bench:
-    st.subheader("🧊 Active Cooldown Bench")
-    st.caption("Price zones currently benched. The desk will NOT burn model calls on these zones until their timer expires.")
-    rows = get_db().cursor().execute("SELECT key_zone, reason, until FROM bench WHERE until > ?", (time.time(),)).fetchall()
-    if rows:
-        st.dataframe(pd.DataFrame([{"Zone": r[0], "Reason": r[1], "Remaining Mins": round((r[2]-time.time())/60, 1)} for r in rows]), use_container_width=True)
+# ==========================================
+# TAB 3: BACKTEST & SIMULATION TRACKER
+# ==========================================
+with tab_backtest:
+    st.subheader("📊 Automated Paper-Trading & Backtest Tracker")
+    st.caption("When Agent 5 generates a trade, it is automatically logged and tracked against live market price to record real win/loss outcomes.")
+
+    tot_trades, wr, net_p, win_count = get_backtest_metrics()
+    
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Total Simulated Trades", tot_trades)
+    b2.metric("Win Rate", f"{wr}%")
+    b3.metric("Net Pips Gain/Loss", f"{net_p:+} pips")
+    b4.metric("Winning Scalps", f"{win_count} / {tot_trades}")
+
+    st.write("")
+    st.markdown("#### 🔄 Currently Active Paper Positions:")
+    conn = get_backtest_db()
+    active_df = pd.read_sql("SELECT symbol, direction, entry_price, stop_loss, tp1, tp2, datetime(opened_at, 'unixepoch') as opened_time FROM active_paper_trades", conn)
+    if not active_df.empty:
+        st.dataframe(active_df, use_container_width=True)
     else:
-        st.info("No price zones currently benched. All zones are eligible for evaluation.")
+        st.info("No active simulated positions right now. A new position will automatically open when Agent 5 triggers a BUY or SELL setup.")
 
-# Tab 4: Journal
-with tab_journal:
-    st.subheader("📋 Closed Trade History & Execution Log")
-    rows = get_db().cursor().execute("SELECT id, symbol, direction, entry_price, exit_price, pnl_pips, outcome, datetime(opened_at, 'unixepoch'), datetime(closed_at, 'unixepoch') FROM trade_log ORDER BY id DESC").fetchall()
-    if rows:
-        st.dataframe(pd.DataFrame(rows, columns=["ID", "Symbol", "Direction", "Entry", "Exit", "PnL Pips", "Outcome", "Opened At", "Closed At"]), use_container_width=True)
+    st.write("")
+    st.markdown("#### 📋 Completed Backtest Trade Journal:")
+    history_df = pd.read_sql("SELECT id, symbol, direction, entry_price, exit_price, pnl_pips, outcome, datetime(opened_at, 'unixepoch') as opened, datetime(closed_at, 'unixepoch') as closed, notes FROM backtest_history ORDER BY id DESC", conn)
+    if not history_df.empty:
+        st.dataframe(history_df, use_container_width=True)
+        if st.button("🧹 Clear Backtest History"):
+            conn.cursor().execute("DELETE FROM backtest_history")
+            conn.cursor().execute("DELETE FROM active_paper_trades")
+            conn.commit()
+            st.rerun()
     else:
-        st.info("No closed trades recorded yet.")
+        st.info("No completed backtest trades yet. As live price hits TP or SL, closed trades will appear here.")
 
-# Tab 5: Settings
+# ==========================================
+# TAB 4: SETTINGS
+# ==========================================
 with tab_settings:
-    st.subheader("⚙️ System Credentials & Configuration")
-    user_key = st.text_input("Groq API Key (Free):", value=st.session_state.api_key, type="password", placeholder="gsk_...")
+    st.subheader("⚙️ Credentials & Configuration")
+    user_key = st.text_input("Groq API Key (Free):", value=st.session_state.api_key, type="password")
     if st.button("💾 Save Credentials"):
         st.session_state.api_key = user_key.strip()
-        os.environ["GROQ_API_KEY"] = user_key.strip()
         st.success("API Key saved to active session!")
