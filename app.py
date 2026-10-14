@@ -68,16 +68,21 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
-# Helper function to generate content
-def query_gemini(client, prompt):
-    models = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-exp"]
-    for m in models:
-        try:
-            res = client.models.generate_content(model=m, contents=prompt)
-            return res.text
-        except Exception:
-            continue
-    raise Exception("Supported Gemini model could not be reached.")
+# --- Auto-detect Active Model ---
+def find_working_model(client):
+    try:
+        all_models = [m.name.split("/")[-1] for m in client.models.list()]
+        # First preference: any flash model
+        for m in all_models:
+            if "flash" in m.lower() and "gemini" in m.lower():
+                return m
+        # Second preference: any gemini model
+        for m in all_models:
+            if "gemini" in m.lower():
+                return m
+    except Exception:
+        pass
+    return "gemini-2.0-flash"
 
 # --- Main Trigger Button ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
@@ -86,6 +91,10 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     else:
         try:
             client = genai.Client(api_key=api_key)
+
+            # Auto-detect which model is active on this account
+            active_model = find_working_model(client)
+            st.toast(f"🤖 Connected to model: {active_model}")
 
             context_info = f"""
             Market: Gold (XAU/USD)
@@ -120,9 +129,13 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
 
             agent_outputs = []
 
-            with st.spinner("AI Agents market scan kar rahe hain..."):
+            with st.spinner("AI Agents live market scan kar rahe hain..."):
                 for ag in agent_list:
-                    txt = query_gemini(client, ag["prompt"])
+                    resp = client.models.generate_content(
+                        model=active_model,
+                        contents=ag["prompt"]
+                    )
+                    txt = resp.text
                     agent_outputs.append(f"{ag['name']}: {txt}")
 
                     with st.chat_message("assistant", avatar=ag["avatar"]):
@@ -138,7 +151,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                     time.sleep(1)
 
             # Agent 5: Master Decision Maker
-            with st.spinner("Agent 5 trade verify kar raha hai..."):
+            with st.spinner("Agent 5 (Chief Decision Officer) trade verify kar raha hai..."):
                 chief_prompt = f"""
                 You are Agent 5, Chief Decision & Risk Officer.
                 Synthesize all 4 inputs:
@@ -156,7 +169,11 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 * **Invalidation:** [Price level that cancels setup]
                 """
 
-                final_plan = query_gemini(client, chief_prompt)
+                chief_resp = client.models.generate_content(
+                    model=active_model,
+                    contents=chief_prompt
+                )
+                final_plan = chief_resp.text
 
                 with st.chat_message("assistant", avatar="⚖️"):
                     st.markdown("**Agent 5: Chief Decision & Risk Officer**")
@@ -170,4 +187,4 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 })
 
         except Exception as e:
-            st.error(f"API Error: {str(e)}")
+            st.error(f"Execution Error: {str(e)}")
