@@ -1,6 +1,6 @@
 import streamlit as st
 import yfinance as yf
-from google import genai
+from groq import Groq
 import time
 
 # --- Page Setup ---
@@ -10,17 +10,17 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🪙 XAU/USD Multi-Agent AI Trading Desk")
-st.caption("5 Autonomous AI Agents analyzing Gold in real-time to find optimal entries.")
+st.title("🪙 XAU/USD Multi-Agent AI Trading Desk (Powered by Groq)")
+st.caption("Ultra-fast autonomous AI agents powered by Llama 3.3 70B.")
 
-# --- Sidebar: API Key ---
+# --- Sidebar: Groq API Key ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-    raw_api_key = st.text_input("Gemini API Key (Free):", type="password")
+    raw_api_key = st.text_input("Groq API Key (Free):", type="password")
     api_key = raw_api_key.strip() if raw_api_key else ""
-    st.markdown("[Free API Key yahan se lein](https://aistudio.google.com/)")
+    st.markdown("[Free Groq Key yahan se lein (15 sec)](https://console.groq.com/)")
     st.divider()
-    st.info("💡 Yeh app 100% cloud par chalti hai. Laptop storage = 0 MB.")
+    st.success("⚡ Powered by Groq LPU: No 503 High Demand Errors!")
 
 # --- Live Market Data Fetcher ---
 @st.cache_data(ttl=60)
@@ -59,7 +59,7 @@ c4.metric("US Dollar Index (DXY)", f"{data['dxy']}")
 
 st.divider()
 
-# --- Chat History Storage ---
+# --- Chat History ---
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -68,20 +68,32 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
-# --- Main Trigger Button ---
+# --- Helper: Query Groq Llama 3.3 70B ---
+def call_groq_agent(client, prompt):
+    completion = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": "You are an elite hedge fund quantitative analyst specializing in Gold (XAU/USD)."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2,
+        max_tokens=250
+    )
+    return completion.choices[0].message.content
+
+# --- Trigger Analysis ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     if not api_key:
-        st.error("Pehle sidebar mein apni free Gemini API Key enter karein!")
+        st.error("Pehle sidebar mein apni free Groq API Key enter karein!")
     else:
         try:
-            client = genai.Client(api_key=api_key)
-            active_model = "gemini-3.8-flash"
+            client = Groq(api_key=api_key)
 
             context_info = f"""
-            Market: Gold (XAU/USD)
-            Current Price: ${data['gold_price']}
-            15-Minute Range High: ${data['high']}
-            15-Minute Range Low: ${data['low']}
+            Asset: Gold (XAU/USD)
+            Live Price: ${data['gold_price']}
+            Recent 15m High: ${data['high']}
+            Recent 15m Low: ${data['low']}
             US Dollar Index (DXY): {data['dxy']}
             """
 
@@ -89,34 +101,30 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 {
                     "name": "Agent 1: Technical & SMC Analyst",
                     "avatar": "📊",
-                    "prompt": f"You are Agent 1, SMC & Price Action trader. Context: {context_info}. Analyze structure (BOS/CHoCH), Order Blocks, FVG. Concise verdict under 90 words."
+                    "prompt": f"Analyze XAU/USD market structure (BOS/CHoCH), Order Blocks, and Fair Value Gaps (FVG). Context: {context_info}. Be concise, institutional, and direct under 90 words."
                 },
                 {
                     "name": "Agent 2: Macro & Treasury Analyst",
                     "avatar": "🌐",
-                    "prompt": f"You are Agent 2, Macroeconomist. Context: {context_info}. Explain how DXY affects Gold right now. Concise verdict under 90 words."
+                    "prompt": f"Explain the direct impact of DXY ({data['dxy']}) and US Treasury yields on Gold right now. Context: {context_info}. Concise verdict under 80 words."
                 },
                 {
                     "name": "Agent 3: Liquidity & Session Hunter",
                     "avatar": "🎯",
-                    "prompt": f"You are Agent 3, Session Liquidity Hunter. Context: {context_info}. Identify sweeps (Asian/London/NY highs/lows) & retail traps. Concise verdict under 90 words."
+                    "prompt": f"Identify session liquidity sweeps (Asian/London/NY high/low), fakeouts, and stop hunts. Context: {context_info}. Concise verdict under 80 words."
                 },
                 {
                     "name": "Agent 4: Sentiment & Geopolitical Watchdog",
                     "avatar": "🗞️",
-                    "prompt": f"You are Agent 4, Safe-Haven & Geopolitical Analyst. Context: {context_info}. Assess risk-off/safe-haven demand for Gold. Concise verdict under 90 words."
+                    "prompt": f"Assess safe-haven demand, central bank buying, and geopolitical risk premium on Gold. Context: {context_info}. Concise verdict under 80 words."
                 }
             ]
 
             agent_outputs = []
 
-            with st.spinner("AI Agents live market scan kar rahe hain..."):
-                for ag in agent_list:
-                    resp = client.models.generate_content(
-                        model=active_model,
-                        contents=ag["prompt"]
-                    )
-                    txt = resp.text
+            for ag in agent_list:
+                with st.spinner(f"{ag['name']} analysis kar raha hai..."):
+                    txt = call_groq_agent(client, ag["prompt"])
                     agent_outputs.append(f"{ag['name']}: {txt}")
 
                     with st.chat_message("assistant", avatar=ag["avatar"]):
@@ -129,32 +137,29 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                         "avatar": ag["avatar"],
                         "content": txt
                     })
-                    time.sleep(1)
+                    time.sleep(0.5)
 
-            # Agent 5: Master Decision Maker
-            with st.spinner("Agent 5 (Chief Decision Officer) trade verify kar raha hai..."):
+            # Agent 5: Master Risk Manager
+            with st.spinner("Agent 5 (Chief Decision Officer) final trade nikaal raha hai..."):
                 chief_prompt = f"""
                 You are Agent 5, Chief Decision & Risk Officer.
-                Synthesize all 4 inputs:
+                Synthesize all 4 specialist reports:
                 {"".join(agent_outputs)}
                 Current Gold Price: ${data['gold_price']}
-                Output the FINAL TRADE PLAN in this exact format:
+                
+                Produce the FINAL TRADE PLAN strictly in this format:
                 ### 🎯 FINAL TRADE VERDICT
                 * **Signal:** [BUY / SELL / WAIT]
-                * **Entry Zone:** [Price Range]
+                * **Entry Zone:** [Exact Price Range]
                 * **Stop Loss (SL):** [Exact Price]
                 * **Take Profit 1 (TP1):** [Conservative Target]
                 * **Take Profit 2 (TP2):** [Runner Target]
                 * **Risk-to-Reward (R:R):** [Minimum 1:2]
-                * **Reasoning:** [2 bullet points]
-                * **Invalidation:** [Price level that cancels setup]
+                * **Reasoning:** [2 bullet points based on team consensus]
+                * **Invalidation:** [Level that cancels setup]
                 """
 
-                chief_resp = client.models.generate_content(
-                    model=active_model,
-                    contents=chief_prompt
-                )
-                final_plan = chief_resp.text
+                final_plan = call_groq_agent(client, chief_prompt)
 
                 with st.chat_message("assistant", avatar="⚖️"):
                     st.markdown("**Agent 5: Chief Decision & Risk Officer**")
@@ -168,4 +173,4 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 })
 
         except Exception as e:
-            st.error(f"Execution Error: {str(e)}")
+            st.error(f"Error: {str(e)}")
