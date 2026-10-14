@@ -7,6 +7,7 @@ Features:
 - Agent 3: Institutional Zone Specialist (Order Blocks & Fair Value Gaps)
 - Agent 4: Momentum, Volume & Trap Detector (ATR, RSI, Volume spike, Fakeout risk)
 - Agent 5: Master Scalp Commander (Strict Confluence, Exact Entry, SL, TP, Win Probability)
+- Dynamic Groq Model Auto-Discovery with Multi-Attempt Retry (Zero Crash Guarantee)
 - Real-time TwelveData REST API engine with seamless fallback
 - Automated Live Simulation & Backtesting Engine (Tracks Win Rate & Net Pips)
 - Interactive TradingView Chart & 24/7 Non-blocking Auto-Pilot
@@ -156,12 +157,11 @@ def fetch_realtime_gold_dossier():
     feed_source = "TwelveData Real-Time Spot (0s Delay)"
     
     try:
-        # 1. Fetch 5-Minute Real-Time Gold Spot (XAU/USD)
         url_m5 = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=40&apikey={api_key}"
         res_m5 = requests.get(url_m5, timeout=8).json()
         
         if res_m5.get("status") != "ok" or "values" not in res_m5:
-            raise ValueError(res_m5.get("message", "TwelveData M5 rate-limited or unavailable"))
+            raise ValueError(res_m5.get("message", "TwelveData M5 rate-limited"))
 
         df_m5 = pd.DataFrame(res_m5["values"])
         df_m5["datetime"] = pd.to_datetime(df_m5["datetime"])
@@ -169,7 +169,6 @@ def fetch_realtime_gold_dossier():
         for col in ["open", "high", "low", "close"]:
             df_m5[col.capitalize()] = df_m5[col].astype(float)
 
-        # 2. Fetch 1-Hour Real-Time Gold Spot for HTF Trend
         url_h1 = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=1h&outputsize=30&apikey={api_key}"
         res_h1 = requests.get(url_h1, timeout=8).json()
         if res_h1.get("status") == "ok" and "values" in res_h1:
@@ -185,16 +184,13 @@ def fetch_realtime_gold_dossier():
         m5_high = round(df_m5['High'].iloc[-6:].max(), 2)
         m5_low = round(df_m5['Low'].iloc[-6:].min(), 2)
         
-        # M5 ATR (14)
         atr = round((df_m5['High'] - df_m5['Low']).tail(14).mean(), 2)
         
-        # M5 RSI (14)
         diff = df_m5['Close'].diff()
         up = diff.clip(lower=0).rolling(14).mean()
         down = -diff.clip(upper=0).rolling(14).mean()
         rsi = round(100 - (100 / (1 + (up / (down + 1e-9)))), 1).iloc[-1]
 
-        # H1 Macro Trend & 50% Equilibrium
         h1_ema50 = round(df_h1['Close'].ewm(span=24, adjust=False).mean().iloc[-1], 2)
         h1_trend = "BULLISH (Above H1 EMA)" if cur_price > h1_ema50 else "BEARISH (Below H1 EMA)"
         h1_24h_high = round(df_h1['High'].iloc[-24:].max(), 2)
@@ -202,7 +198,6 @@ def fetch_realtime_gold_dossier():
         equilibrium_50 = round((h1_24h_high + h1_24h_low) / 2, 2)
         zone_pd = "DISCOUNT (Favorable for Longs)" if cur_price < equilibrium_50 else "PREMIUM (Favorable for Shorts)"
 
-        # Asian Range (00:00 to 06:00 UTC)
         now_utc = datetime.now(timezone.utc)
         if df_m5.index.tz is None:
             df_m5.index = df_m5.index.tz_localize("UTC")
@@ -220,7 +215,6 @@ def fetch_realtime_gold_dossier():
             asian_high = round(recent_24['High'].max(), 2)
             asian_low = round(recent_24['Low'].min(), 2)
 
-        # M5 FVG Scanner
         fvg_bullish = None
         fvg_bearish = None
         fvg_ce = None
@@ -239,12 +233,11 @@ def fetch_realtime_gold_dossier():
                 fvg_ce = round((c1_l + c3_h) / 2, 2)
                 ob_zone = f"Bearish OB @ ${round(df_m5['High'].iloc[i-1], 2)}"
 
-        # Sweep Detection
         recent_6 = df_m5.iloc[-6:]
         bull_sweep = (recent_6['Low'].min() < asian_low and cur_price > asian_low)
         bear_sweep = (recent_6['High'].max() > asian_high and cur_price < asian_high)
 
-    except Exception as e:
+    except Exception:
         feed_source = "Spot Feed (Cached / Backup)"
         cur_price = 2658.40
         m5_high = 2662.10
@@ -322,28 +315,51 @@ tab_chat, tab_chart, tab_backtest, tab_settings = st.tabs([
     "⚙️ Credentials & Settings"
 ])
 
-# --- Robust 70B AI Caller ---
-def query_70b_agent(client, prompt):
-    models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-    for model_name in models:
-        try:
-            resp = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "You are an elite quantitative prop-firm trader specializing in Gold (XAU/USD). Speak with strict institutional precision, zero fluff."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.10,
-                max_tokens=250
-            )
-            return resp.choices[0].message.content
-        except Exception:
-            continue
-    raise Exception("Model busy, auto-retrying...")
+# --- Robust Multi-Attempt Dynamic AI Caller ---
+def query_super_agent_safe(client, prompt):
+    try:
+        available_models = [
+            x.id for x in client.models.list().data 
+            if not any(k in x.id.lower() for k in ["whisper", "guard", "safeguard", "tts", "orpheus"])
+        ]
+    except Exception:
+        available_models = ["llama-3.1-8b-instant"]
+
+    if not available_models:
+        available_models = ["llama-3.1-8b-instant"]
+
+    last_error = None
+    for model_name in available_models[:3]:
+        for attempt in range(1, 4):
+            try:
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are an elite quantitative prop-firm trader specializing in Gold (XAU/USD). Speak with strict institutional precision, zero fluff."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.10,
+                    max_tokens=250
+                )
+                if resp and resp.choices:
+                    return resp.choices[0].message.content
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if "429" in err_str or "rate limit" in err_str or "503" in err_str:
+                    time.sleep(1.5 * attempt)
+                    continue
+                break
+
+    raise Exception(f"Groq API Notice: {str(last_error)}")
 
 # --- Full 5-Agent Execution Pipeline ---
 def execute_5_super_agents():
-    client = Groq(api_key=st.session_state.api_key)
+    try:
+        client = Groq(api_key=st.session_state.api_key)
+    except Exception as e:
+        st.error(f"Groq Client Initialization Error: {str(e)}")
+        return
 
     context_data = f"""
     Asset: Gold Spot (XAU/USD - TwelveData Real-Time Feed)
@@ -418,75 +434,79 @@ def execute_5_super_agents():
 
     statements = []
 
-    for ag in super_agent_team:
-        with st.spinner(f"{ag['name']} evaluating live market..."):
-            res = query_70b_agent(client, ag["prompt"])
-            statements.append(f"{ag['name']}: {res}")
+    try:
+        for ag in super_agent_team:
+            with st.spinner(f"{ag['name']} evaluating live market..."):
+                res = query_super_agent_safe(client, ag["prompt"])
+                statements.append(f"{ag['name']}: {res}")
 
-            with st.chat_message("assistant", avatar=ag["avatar"]):
-                st.markdown(f"**{ag['name']}**")
-                st.markdown(res)
+                with st.chat_message("assistant", avatar=ag["avatar"]):
+                    st.markdown(f"**{ag['name']}**")
+                    st.markdown(res)
+
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "name": ag["name"],
+                    "avatar": ag["avatar"],
+                    "content": res
+                })
+                time.sleep(0.8)
+
+        # Super Agent 5: Master Scalp Commander
+        with st.spinner("Super Agent 5 (Master Scalp Commander) is synthesizing all 4 agents and formulating exact trade ticket..."):
+            chief_prompt = f"""
+            You are Agent 5, Master Scalp Commander. YOUR JOB IS TO SYNTHESIZE ALL 4 AGENTS, CALCULATE CONFLUENCE, AND TRIGGER EXACT ENTRY, STOP LOSS, AND TAKE PROFIT.
+            Team Dossiers:
+            {"".join(statements)}
+            
+            Live Gold Price: ${m['price']}
+            ATR Volatility: ${m['atr']}
+            50% FVG Midpoint: ${m['fvg_ce']}
+            
+            STRICT CONFLUENCE RULE:
+            If Agents 1-4 disagree, trap risk is elevated, or structure is choppy, output 'NO TRADE (WAIT FOR CLEAN SWEEP)'.
+            Only authorize execution if there is minimum 3-agent confluence with >= 80% Win Probability.
+            
+            Produce the FINAL HIGH-PROBABILITY TICKET strictly in this format:
+            ### 🎯 VERIFIED M5 SCALP TICKET
+            * **Signal Action:** [STRONG BUY / BUY / NO TRADE (WAIT) / SELL / STRONG SELL]
+            * **Execution Style:** [Market Execution OR 50% FVG Limit Entry @ ${m['fvg_ce']}]
+            * **Entry Price Zone:** [Exact Price Range, e.g. ${m['price']-0.5} - ${m['price']+0.5}]
+            * **Stop Loss (SL):** [Exact Price - strictly calculated 15 to 25 pips max buffer]
+            * **Take Profit 1 (TP1):** [Conservative - 1:1.5 RR, bank 70% volume]
+            * **Take Profit 2 (TP2):** [Runner Target - 1:3+ RR towards opposing liquidity]
+            * **Risk-to-Reward (R:R):** [Calculated RR]
+            * **Execution Management:** [e.g. Move SL to Breakeven immediately upon hitting TP1]
+            * **Invalidation Level:** [Exact price that cancels this trade]
+            """
+
+            final_ticket = query_super_agent_safe(client, chief_prompt)
+
+            with st.chat_message("assistant", avatar="⚖️"):
+                st.markdown("**Super Agent 5: Master Scalp Commander**")
+                st.success(final_ticket)
 
             st.session_state.chat_messages.append({
                 "role": "assistant",
-                "name": ag["name"],
-                "avatar": ag["avatar"],
-                "content": res
+                "name": "Super Agent 5: Master Scalp Commander",
+                "avatar": "⚖️",
+                "content": final_ticket
             })
-            time.sleep(0.3)
 
-    # Super Agent 5: Master Scalp Commander
-    with st.spinner("Super Agent 5 (Master Scalp Commander) is synthesizing all 4 agents and formulating exact trade ticket..."):
-        chief_prompt = f"""
-        You are Agent 5, Master Scalp Commander. YOUR JOB IS TO SYNTHESIZE ALL 4 AGENTS, CALCULATE CONFLUENCE, AND TRIGGER EXACT ENTRY, STOP LOSS, AND TAKE PROFIT.
-        Team Dossiers:
-        {"".join(statements)}
-        
-        Live Gold Price: ${m['price']}
-        ATR Volatility: ${m['atr']}
-        50% FVG Midpoint: ${m['fvg_ce']}
-        
-        STRICT CONFLUENCE RULE:
-        If Agents 1-4 disagree, trap risk is elevated, or structure is choppy, output 'NO TRADE (WAIT FOR CLEAN SWEEP)'.
-        Only authorize execution if there is minimum 3-agent confluence with >= 80% Win Probability.
-        
-        Produce the FINAL HIGH-PROBABILITY TICKET strictly in this format:
-        ### 🎯 VERIFIED M5 SCALP TICKET
-        * **Signal Action:** [STRONG BUY / BUY / NO TRADE (WAIT) / SELL / STRONG SELL]
-        * **Execution Style:** [Market Execution OR 50% FVG Limit Entry @ ${m['fvg_ce']}]
-        * **Entry Price Zone:** [Exact Price Range, e.g. ${m['price']-0.5} - ${m['price']+0.5}]
-        * **Stop Loss (SL):** [Exact Price - strictly calculated 15 to 25 pips max buffer]
-        * **Take Profit 1 (TP1):** [Conservative - 1:1.5 RR, bank 70% volume]
-        * **Take Profit 2 (TP2):** [Runner Target - 1:3+ RR towards opposing liquidity]
-        * **Risk-to-Reward (R:R):** [Calculated RR]
-        * **Execution Management:** [e.g. Move SL to Breakeven immediately upon hitting TP1]
-        * **Invalidation Level:** [Exact price that cancels this trade]
-        """
+            # Automated Simulation Injection for Backtesting:
+            if "STRONG BUY" in final_ticket or "BUY" in final_ticket:
+                sl_val = round(m["price"] - (m["atr"] * 1.5), 2)
+                tp1_val = round(m["price"] + (m["atr"] * 2.2), 2)
+                tp2_val = round(m["price"] + (m["atr"] * 4.0), 2)
+                log_simulated_trade("BUY", m["price"], sl_val, tp1_val, tp2_val)
+            elif "STRONG SELL" in final_ticket or "SELL" in final_ticket:
+                sl_val = round(m["price"] + (m["atr"] * 1.5), 2)
+                tp1_val = round(m["price"] - (m["atr"] * 2.2), 2)
+                tp2_val = round(m["price"] - (m["atr"] * 4.0), 2)
+                log_simulated_trade("SELL", m["price"], sl_val, tp1_val, tp2_val)
 
-        final_ticket = query_70b_agent(client, chief_prompt)
-
-        with st.chat_message("assistant", avatar="⚖️"):
-            st.markdown("**Super Agent 5: Master Scalp Commander**")
-            st.success(final_ticket)
-
-        st.session_state.chat_messages.append({
-            "role": "assistant",
-            "name": "Super Agent 5: Master Scalp Commander",
-            "avatar": "⚖️",
-            "content": final_ticket
-        })
-
-        # Automated Simulation Injection for Backtesting:
-        if "STRONG BUY" in final_ticket or "BUY" in final_ticket:
-            sl_val = round(m["price"] - (m["atr"] * 1.5), 2)
-            tp1_val = round(m["price"] + (m["atr"] * 2.2), 2)
-            tp2_val = round(m["price"] + (m["atr"] * 4.0), 2)
-            log_simulated_trade("BUY", m["price"], sl_val, tp1_val, tp2_val)
-        elif "STRONG SELL" in final_ticket or "SELL" in final_ticket:
-            sl_val = round(m["price"] + (m["atr"] * 1.5), 2)
-            tp1_val = round(m["price"] - (m["atr"] * 2.2), 2)
-            tp2_val = round(m["price"] - (m["atr"] * 4.0), 2)
-            log_simulated_trade("SELL", m["price"], sl_val, tp1_val, tp2_val)
+    except Exception as e:
+        st.error(f"Execution Error: {str(e)}")
 
 # ==========================================
 # TAB 1: 5-AGENT LIVE TRADING ROOM
