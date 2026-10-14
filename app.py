@@ -68,6 +68,17 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
+# Helper function to generate content
+def query_gemini(client, prompt):
+    models = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.0-flash-exp"]
+    for m in models:
+        try:
+            res = client.models.generate_content(model=m, contents=prompt)
+            return res.text
+        except Exception:
+            continue
+    raise Exception("Supported Gemini model could not be reached.")
+
 # --- Main Trigger Button ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     if not api_key:
@@ -109,16 +120,9 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
 
             agent_outputs = []
 
-            # Model to use: gemini-1.5-flash (most stable & globally supported)
-            TARGET_MODEL = "gemini-1.5-flash"
-
             with st.spinner("AI Agents market scan kar rahe hain..."):
                 for ag in agent_list:
-                    resp = client.models.generate_content(
-                        model=TARGET_MODEL,
-                        contents=ag["prompt"]
-                    )
-                    txt = resp.text
+                    txt = query_gemini(client, ag["prompt"])
                     agent_outputs.append(f"{ag['name']}: {txt}")
 
                     with st.chat_message("assistant", avatar=ag["avatar"]):
@@ -152,11 +156,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 * **Invalidation:** [Price level that cancels setup]
                 """
 
-                chief_resp = client.models.generate_content(
-                    model=TARGET_MODEL,
-                    contents=chief_prompt
-                )
-                final_plan = chief_resp.text
+                final_plan = query_gemini(client, chief_prompt)
 
                 with st.chat_message("assistant", avatar="⚖️"):
                     st.markdown("**Agent 5: Chief Decision & Risk Officer**")
@@ -171,4 +171,3 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
 
         except Exception as e:
             st.error(f"API Error: {str(e)}")
-            st.info("Check karein ke aapki API Key theek se copy hui hai ya nahi.")
