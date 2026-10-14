@@ -1,5 +1,5 @@
 """
-XAU/USD Megabrain Quantitative Trading Desk (High Volatility Scalp Edition)
+XAU/USD Megabrain Quantitative Trading Desk (High Volatility Scalp Edition with Bench Reset)
 Adapted from Jev / TypeSafe 6-Bot Desk architecture:
 - Zero prose / essays: The model ONLY returns typed numbers & probabilities.
 - Hard arithmetic facts kill first before any model is called (Cost: $0).
@@ -76,7 +76,7 @@ with get_db() as _conn:
 # --- 3. Thresholds (Hard & Soft) ---
 HARD = {
     "min_atr_m5": 1.20,
-    "max_atr_m5": 12.00,        # Expanded to $12.00 to trade active volatility & expansions
+    "max_atr_m5": 12.00,        # Expanded to $12.00 for active volatility
     "min_recent_range": 3.0,
     "max_rsi_extreme_buy": 74,
     "min_rsi_extreme_sell": 26
@@ -413,11 +413,18 @@ tab_desk, tab_chart, tab_bench, tab_journal, tab_settings = st.tabs([
 
 # Tab 1: Desk
 with tab_desk:
-    col_run, col_poll = st.columns([4, 1])
+    col_run, col_poll, col_reset = st.columns([3, 1, 1])
     with col_run:
         btn_run = st.button("⚡ EXECUTE MEGABRAIN QUANT CYCLE", type="primary")
     with col_poll:
-        if st.button("🔄 Refresh Data"):
+        if st.button("🔄 Refresh"):
+            st.rerun()
+    with col_reset:
+        if st.button("🧹 Reset Bench"):
+            get_db().cursor().execute("DELETE FROM bench")
+            get_db().commit()
+            st.success("Bench cleared!")
+            time.sleep(0.5)
             st.rerun()
 
     if btn_run:
@@ -438,7 +445,7 @@ with tab_desk:
         if status == "POSITION_HELD":
             st.info(f"Position currently held. RISK Manager Action: **{res.get('risk_action')}**")
         elif status == "BENCHED":
-            st.warning(f"🧊 **Zone {res.get('zone')} is on the Cooldown Bench.** Model calls avoided to preserve capital.")
+            st.warning(f"🧊 **Zone {res.get('zone')} is on the Cooldown Bench.** Click **'🧹 Reset Bench'** above if you want to bypass the timer.")
         elif status == "HARD_KILLED":
             st.error(f"🛑 **Hard Arithmetic Gate Triggered:** `{res.get('reason')}`. Zero API cost incurred.")
         elif status == "SOFT_KILLED":
