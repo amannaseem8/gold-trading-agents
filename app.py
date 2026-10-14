@@ -11,16 +11,35 @@ st.set_page_config(
 )
 
 st.title("🪙 XAU/USD Multi-Agent AI Trading Desk (Powered by Groq)")
-st.caption("Ultra-fast autonomous AI agents powered by Llama 3.1 Instant.")
+st.caption("Ultra-fast autonomous AI agents with Live Groq Model Auto-Detection.")
 
-# --- Sidebar: Groq API Key ---
+# --- Sidebar: Groq API Key & Live Model Selector ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     raw_api_key = st.text_input("Groq API Key (Free):", type="password")
     api_key = raw_api_key.strip() if raw_api_key else ""
     st.markdown("[Free Groq Key yahan se lein](https://console.groq.com/)")
+    
+    selected_model = None
+    if api_key:
+        try:
+            temp_client = Groq(api_key=api_key)
+            model_list_data = temp_client.models.list()
+            # Filter out non-chat models (like audio/whisper/guard)
+            chat_models = [
+                m.id for m in model_list_data.data 
+                if not any(x in m.id.lower() for x in ["whisper", "guard", "safeguard", "orpheus"])
+            ]
+            if chat_models:
+                selected_model = st.selectbox("Active Groq Model:", chat_models, index=0)
+                st.success(f"Connected: {selected_model}")
+            else:
+                st.error("No active text models found on this key.")
+        except Exception as e:
+            st.error(f"Key Validation Error: {str(e)}")
+
     st.divider()
-    st.success("⚡ Powered by Groq LPU: Instant 800 tokens/sec speed!")
+    st.info("⚡ Powered by Groq LPU: Real-time dynamic model matching.")
 
 # --- Live Market Data Fetcher ---
 @st.cache_data(ttl=60)
@@ -68,35 +87,25 @@ for message in st.session_state.chat_history:
         st.markdown(f"**{message['name']}**")
         st.markdown(message["content"])
 
-# --- Helper: Query Groq with Fallback ---
-def call_groq_agent(client, prompt):
-    candidate_models = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768"
-    ]
-    last_err = None
-    for model_name in candidate_models:
-        try:
-            completion = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": "You are an elite quantitative analyst specializing in Gold (XAU/USD)."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=250
-            )
-            return completion.choices[0].message.content
-        except Exception as e:
-            last_err = e
-            continue
-    raise last_err
+# --- Helper: Query Groq with Selected Active Model ---
+def call_groq_agent(client, model_name, prompt):
+    completion = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": "You are an elite hedge fund quantitative analyst specializing in Gold (XAU/USD)."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.2,
+        max_tokens=250
+    )
+    return completion.choices[0].message.content
 
 # --- Trigger Analysis ---
 if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     if not api_key:
         st.error("Pehle sidebar mein apni free Groq API Key enter karein!")
+    elif not selected_model:
+        st.error("Groq model connect nahi hua. Sidebar mein API key check karein.")
     else:
         try:
             client = Groq(api_key=api_key)
@@ -136,7 +145,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
 
             for ag in agent_list:
                 with st.spinner(f"{ag['name']} analysis kar raha hai..."):
-                    txt = call_groq_agent(client, ag["prompt"])
+                    txt = call_groq_agent(client, selected_model, ag["prompt"])
                     agent_outputs.append(f"{ag['name']}: {txt}")
 
                     with st.chat_message("assistant", avatar=ag["avatar"]):
@@ -171,7 +180,7 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
                 * **Invalidation:** [Level that cancels setup]
                 """
 
-                final_plan = call_groq_agent(client, chief_prompt)
+                final_plan = call_groq_agent(client, selected_model, chief_prompt)
 
                 with st.chat_message("assistant", avatar="⚖️"):
                     st.markdown("**Agent 5: Chief Decision & Risk Officer**")
