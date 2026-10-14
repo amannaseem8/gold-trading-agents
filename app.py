@@ -16,10 +16,11 @@ st.caption("5 Autonomous AI Agents analyzing Gold in real-time to find optimal e
 # --- Sidebar: API Key ---
 with st.sidebar:
     st.header("⚙️ Configuration")
-    api_key = st.text_input("Gemini API Key (Free):", type="password")
+    raw_api_key = st.text_input("Gemini API Key (Free):", type="password")
+    api_key = raw_api_key.strip() if raw_api_key else ""
     st.markdown("[Free API Key yahan se lein](https://aistudio.google.com/)")
     st.divider()
-    st.info("💡 Yeh app 100% cloud par chalti hai. Aapke laptop ki 0 MB storage use hoti hai.")
+    st.info("💡 Yeh app 100% cloud par chalti hai. Laptop storage = 0 MB.")
 
 # --- Live Market Data Fetcher ---
 @st.cache_data(ttl=60)
@@ -40,7 +41,6 @@ def get_gold_market_data():
             "dxy": current_dxy
         }
     except Exception:
-        # Fallback agar market holiday ho ya feed delay ho
         return {
             "gold_price": 2650.00,
             "high": 2658.00,
@@ -73,112 +73,102 @@ if st.button("🚀 Start 5-Agent Market Analysis", type="primary"):
     if not api_key:
         st.error("Pehle sidebar mein apni free Gemini API Key enter karein!")
     else:
-        client = genai.Client(api_key=api_key)
+        try:
+            client = genai.Client(api_key=api_key)
 
-        context_info = f"""
-        Market: Gold (XAU/USD)
-        Current Price: ${data['gold_price']}
-        15-Minute Range High: ${data['high']}
-        15-Minute Range Low: ${data['low']}
-        US Dollar Index (DXY): {data['dxy']}
-        """
+            context_info = f"""
+            Market: Gold (XAU/USD)
+            Current Price: ${data['gold_price']}
+            15-Minute Range High: ${data['high']}
+            15-Minute Range Low: ${data['low']}
+            US Dollar Index (DXY): {data['dxy']}
+            """
 
-        # 4 Specialist Agents
-        agent_list = [
-            {
-                "name": "Agent 1: Technical & SMC Analyst",
-                "avatar": "📊",
-                "prompt": f"""You are Agent 1, a professional Smart Money Concepts (SMC) & Price Action trader for XAU/USD.
-                Context: {context_info}
-                Analyze market structure (BOS/CHoCH), Order Blocks, Fair Value Gaps (FVG), and support/resistance.
-                Provide your verdict in under 100 words directly to the team."""
-            },
-            {
-                "name": "Agent 2: Macro & Treasury Analyst",
-                "avatar": "🌐",
-                "prompt": f"""You are Agent 2, a Macroeconomist monitoring the US Dollar (DXY) and Treasury Yields for Gold.
-                Context: {context_info}
-                Explain how current DXY strength/weakness influences Gold direction.
-                Provide your verdict in under 100 words."""
-            },
-            {
-                "name": "Agent 3: Liquidity & Session Hunter",
-                "avatar": "🎯",
-                "prompt": f"""You are Agent 3, specialized in Session Liquidity and Retail Traps on Gold.
-                Context: {context_info}
-                Check for Asian/London/NY session high/low liquidity sweeps and stop hunts.
-                Provide your verdict in under 100 words."""
-            },
-            {
-                "name": "Agent 4: Sentiment & Geopolitical Watchdog",
-                "avatar": "🗞️",
-                "prompt": f"""You are Agent 4, tracking Safe-Haven Gold demand, geopolitical conflicts, and market fear/greed.
-                Context: {context_info}
-                Assess overall safe-haven sentiment for Gold.
-                Provide your verdict in under 100 words."""
-            }
-        ]
+            agent_list = [
+                {
+                    "name": "Agent 1: Technical & SMC Analyst",
+                    "avatar": "📊",
+                    "prompt": f"You are Agent 1, SMC & Price Action trader. Context: {context_info}. Analyze structure (BOS/CHoCH), Order Blocks, FVG. Concise verdict under 90 words."
+                },
+                {
+                    "name": "Agent 2: Macro & Treasury Analyst",
+                    "avatar": "🌐",
+                    "prompt": f"You are Agent 2, Macroeconomist. Context: {context_info}. Explain how DXY affects Gold right now. Concise verdict under 90 words."
+                },
+                {
+                    "name": "Agent 3: Liquidity & Session Hunter",
+                    "avatar": "🎯",
+                    "prompt": f"You are Agent 3, Session Liquidity Hunter. Context: {context_info}. Identify sweeps (Asian/London/NY highs/lows) & retail traps. Concise verdict under 90 words."
+                },
+                {
+                    "name": "Agent 4: Sentiment & Geopolitical Watchdog",
+                    "avatar": "🗞️",
+                    "prompt": f"You are Agent 4, Safe-Haven & Geopolitical Analyst. Context: {context_info}. Assess risk-off/safe-haven demand for Gold. Concise verdict under 90 words."
+                }
+            ]
 
-        agent_outputs = []
+            agent_outputs = []
 
-        # Run Agents 1 to 4 sequentially
-        with st.spinner("AI Agents live market scan kar rahe hain..."):
-            for ag in agent_list:
-                resp = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=ag["prompt"]
+            # Model to use: gemini-1.5-flash (most stable & globally supported)
+            TARGET_MODEL = "gemini-1.5-flash"
+
+            with st.spinner("AI Agents market scan kar rahe hain..."):
+                for ag in agent_list:
+                    resp = client.models.generate_content(
+                        model=TARGET_MODEL,
+                        contents=ag["prompt"]
+                    )
+                    txt = resp.text
+                    agent_outputs.append(f"{ag['name']}: {txt}")
+
+                    with st.chat_message("assistant", avatar=ag["avatar"]):
+                        st.markdown(f"**{ag['name']}**")
+                        st.markdown(txt)
+
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "name": ag["name"],
+                        "avatar": ag["avatar"],
+                        "content": txt
+                    })
+                    time.sleep(1)
+
+            # Agent 5: Master Decision Maker
+            with st.spinner("Agent 5 trade verify kar raha hai..."):
+                chief_prompt = f"""
+                You are Agent 5, Chief Decision & Risk Officer.
+                Synthesize all 4 inputs:
+                {"".join(agent_outputs)}
+                Current Gold Price: ${data['gold_price']}
+                Output the FINAL TRADE PLAN in this exact format:
+                ### 🎯 FINAL TRADE VERDICT
+                * **Signal:** [BUY / SELL / WAIT]
+                * **Entry Zone:** [Price Range]
+                * **Stop Loss (SL):** [Exact Price]
+                * **Take Profit 1 (TP1):** [Conservative Target]
+                * **Take Profit 2 (TP2):** [Runner Target]
+                * **Risk-to-Reward (R:R):** [Minimum 1:2]
+                * **Reasoning:** [2 bullet points]
+                * **Invalidation:** [Price level that cancels setup]
+                """
+
+                chief_resp = client.models.generate_content(
+                    model=TARGET_MODEL,
+                    contents=chief_prompt
                 )
-                txt = resp.text
-                agent_outputs.append(f"{ag['name']}: {txt}")
+                final_plan = chief_resp.text
 
-                with st.chat_message("assistant", avatar=ag["avatar"]):
-                    st.markdown(f"**{ag['name']}**")
-                    st.markdown(txt)
+                with st.chat_message("assistant", avatar="⚖️"):
+                    st.markdown("**Agent 5: Chief Decision & Risk Officer**")
+                    st.success(final_plan)
 
                 st.session_state.chat_history.append({
                     "role": "assistant",
-                    "name": ag["name"],
-                    "avatar": ag["avatar"],
-                    "content": txt
+                    "name": "Agent 5: Chief Decision & Risk Officer",
+                    "avatar": "⚖️",
+                    "content": final_plan
                 })
-                time.sleep(1)
 
-        # Agent 5: Final Decision Maker
-        with st.spinner("Agent 5 (Chief Decision Officer) trade verify kar raha hai..."):
-            chief_prompt = f"""
-            You are Agent 5, the Chief Decision & Risk Officer.
-            Review the analysis of your 4 specialist agents:
-            
-            {"".join(agent_outputs)}
-            
-            Current Gold Price: ${data['gold_price']}
-            
-            Synthesize all 4 inputs and produce the FINAL TRADE PLAN in this exact format:
-            
-            ### 🎯 FINAL TRADE VERDICT
-            * **Signal:** [BUY / SELL / WAIT]
-            * **Entry Zone:** [Exact Price or Range]
-            * **Stop Loss (SL):** [Exact Price]
-            * **Take Profit 1 (TP1):** [Conservative Target]
-            * **Take Profit 2 (TP2):** [Extended Target]
-            * **Risk-to-Reward (R:R):** [Minimum 1:2]
-            * **Reasoning:** [2-3 short bullet points summarizing confluence]
-            * **Invalidation:** [Price level that cancels this idea]
-            """
-
-            chief_resp = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=chief_prompt
-            )
-            final_plan = chief_resp.text
-
-            with st.chat_message("assistant", avatar="⚖️"):
-                st.markdown("**Agent 5: Chief Decision & Risk Officer**")
-                st.success(final_plan)
-
-            st.session_state.chat_history.append({
-                "role": "assistant",
-                "name": "Agent 5: Chief Decision & Risk Officer",
-                "avatar": "⚖️",
-                "content": final_plan
-            })
+        except Exception as e:
+            st.error(f"API Error: {str(e)}")
+            st.info("Check karein ke aapki API Key theek se copy hui hai ya nahi.")
