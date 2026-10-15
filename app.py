@@ -1,6 +1,6 @@
 """
 XAU/USD 5 Super-Agent Quantitative Trading Room & Automated Backtester
-Step 2 Institutional Upgrade:
+Step 2 Institutional Upgrade (With SQLite Auto-Migration):
 - True Unmitigated FVG Engine (Eliminates already-filled FVG traps)
 - Inducement (IDM) & Validated Order Block Scanner
 - Dedicated Adversarial "Devil's Advocate" Skeptic Agent (Stress-tests trades before execution)
@@ -54,7 +54,7 @@ if "twelvedata_key" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
 
-# --- 2. Advanced Backtesting Engine (With Scale-Out & Breakeven) ---
+# --- 2. Advanced Backtesting Engine (With Auto-Migration & Scale-Out) ---
 DB_PATH = os.environ.get("BACKTEST_DB_PATH", "/tmp/scalper_backtest.db")
 
 def get_backtest_db():
@@ -88,6 +88,12 @@ with get_backtest_db() as _conn:
         notes TEXT
     );
     """)
+    # Auto-migration: ensure tp1_hit column exists if table was created in a previous session
+    try:
+        _conn.execute("ALTER TABLE active_paper_trades ADD COLUMN tp1_hit INTEGER DEFAULT 0")
+        _conn.commit()
+    except Exception:
+        pass
 
 def log_simulated_trade(direction, entry, sl, tp1, tp2):
     conn = get_backtest_db()
@@ -116,10 +122,12 @@ def evaluate_active_paper_trades(current_price):
         pnl = 0.0
 
         if direction == "BUY":
+            # Scale-out check: Hit TP1
             if current_price >= tp1 and tp1_hit == 0:
                 cursor.execute("UPDATE active_paper_trades SET stop_loss=?, tp1_hit=1 WHERE id=?", (entry + 0.20, t_id))
                 conn.commit()
 
+            # Final Exit Checks
             if current_price >= tp2:
                 hit_outcome = "WIN (TP2 Runner Hit)"
                 pnl = round((tp2 - entry) * 10, 1)
@@ -128,10 +136,12 @@ def evaluate_active_paper_trades(current_price):
                 pnl = 2.0 if tp1_hit == 1 else round((sl - entry) * 10, 1)
 
         elif direction == "SELL":
+            # Scale-out check: Hit TP1
             if current_price <= tp1 and tp1_hit == 0:
                 cursor.execute("UPDATE active_paper_trades SET stop_loss=?, tp1_hit=1 WHERE id=?", (entry - 0.20, t_id))
                 conn.commit()
 
+            # Final Exit Checks
             if current_price <= tp2:
                 hit_outcome = "WIN (TP2 Runner Hit)"
                 pnl = round((entry - tp2) * 10, 1)
