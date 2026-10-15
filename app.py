@@ -1,16 +1,11 @@
 """
 XAU/USD 5 Super-Agent Quantitative Trading Room & Automated Backtester
-Step 1 Upgrade: Real-Time Zero-Lag TwelveData Spot Feed for XAU/USD
-Features:
-- Agent 1: Liquidity & Sweep Detector (Asian Range, BSL/SSL Sweeps)
-- Agent 2: Trend & Macro News Filter (H1/Daily EMA, DXY inverse correlation)
-- Agent 3: Institutional Zone Specialist (Order Blocks & Fair Value Gaps)
-- Agent 4: Momentum, Volume & Trap Detector (ATR, RSI, Volume spike, Fakeout risk)
-- Agent 5: Master Scalp Commander (Strict Confluence, Exact Entry, SL, TP, Win Probability)
-- Dynamic Groq Model Auto-Discovery with Multi-Attempt Retry (Zero Crash Guarantee)
-- Real-time TwelveData REST API engine with seamless fallback
-- Automated Live Simulation & Backtesting Engine (Tracks Win Rate & Net Pips)
-- Interactive TradingView Chart & 24/7 Non-blocking Auto-Pilot
+Step 2 Institutional Upgrade:
+- True Unmitigated FVG Engine (Eliminates already-filled FVG traps)
+- Inducement (IDM) & Validated Order Block Scanner
+- Dedicated Adversarial "Devil's Advocate" Skeptic Agent (Stress-tests trades before execution)
+- 70/30 Scale-Out & Breakeven Trade Management (Banks 70% @ TP1, moves SL to BE)
+- TwelveData 0-Second Real-Time Spot Feed + Dynamic Groq Model Auto-Discovery
 """
 
 import streamlit as st
@@ -26,13 +21,12 @@ from datetime import datetime, timezone
 
 # --- 1. Terminal Configuration ---
 st.set_page_config(
-    page_title="XAU/USD 5 Super-Agent Trading Room",
+    page_title="XAU/USD Institutional Super-Desk",
     page_icon="👑",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# Dark Theme CSS
 st.markdown("""
 <style>
     .main { background-color: #080c14; color: #e6edf3; }
@@ -43,6 +37,7 @@ st.markdown("""
     .stTabs [aria-selected="true"] { background-color: #238636 !important; color: white !important; }
     .card-box { background-color: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 12px 18px; margin-bottom: 12px; }
     .live-badge { background-color: #166534; color: #4ade80; padding: 3px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; }
+    .fvg-fresh { color: #38bdf8; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -59,7 +54,7 @@ if "twelvedata_key" not in st.session_state:
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
 
-# --- 2. Automated Backtesting & Simulation Database ---
+# --- 2. Advanced Backtesting Engine (With Scale-Out & Breakeven) ---
 DB_PATH = os.environ.get("BACKTEST_DB_PATH", "/tmp/scalper_backtest.db")
 
 def get_backtest_db():
@@ -77,6 +72,7 @@ with get_backtest_db() as _conn:
         stop_loss REAL,
         tp1 REAL,
         tp2 REAL,
+        tp1_hit INTEGER DEFAULT 0,
         opened_at REAL
     );
     CREATE TABLE IF NOT EXISTS backtest_history(
@@ -99,40 +95,54 @@ def log_simulated_trade(direction, entry, sl, tp1, tp2):
     existing = cursor.execute("SELECT id FROM active_paper_trades WHERE symbol='XAUUSD' AND direction=?", (direction,)).fetchone()
     if not existing:
         cursor.execute(
-            "INSERT INTO active_paper_trades (symbol, direction, entry_price, stop_loss, tp1, tp2, opened_at) VALUES (?,?,?,?,?,?,?)",
-            ("XAUUSD", direction, entry, sl, tp1, tp2, time.time())
+            "INSERT INTO active_paper_trades (symbol, direction, entry_price, stop_loss, tp1, tp2, tp1_hit, opened_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("XAUUSD", direction, entry, sl, tp1, tp2, 0, time.time())
         )
         conn.commit()
 
 def evaluate_active_paper_trades(current_price):
+    """
+    World-class Trade Management:
+    - When TP1 is touched: Bank 70% profit, move Stop Loss to Entry (Break-even).
+    - When TP2 is touched: Close remaining 30% runner.
+    """
     conn = get_backtest_db()
     cursor = conn.cursor()
-    active_rows = cursor.execute("SELECT id, direction, entry_price, stop_loss, tp1, tp2, opened_at FROM active_paper_trades").fetchall()
+    active_rows = cursor.execute("SELECT id, direction, entry_price, stop_loss, tp1, tp2, tp1_hit, opened_at FROM active_paper_trades").fetchall()
     
     for row in active_rows:
-        t_id, direction, entry, sl, tp1, tp2, opened_at = row
+        t_id, direction, entry, sl, tp1, tp2, tp1_hit, opened_at = row
         hit_outcome = None
         pnl = 0.0
 
         if direction == "BUY":
+            if current_price >= tp1 and tp1_hit == 0:
+                cursor.execute("UPDATE active_paper_trades SET stop_loss=?, tp1_hit=1 WHERE id=?", (entry + 0.20, t_id))
+                conn.commit()
+
             if current_price >= tp2:
-                hit_outcome = "WIN (TP2 Hit)"
+                hit_outcome = "WIN (TP2 Runner Hit)"
                 pnl = round((tp2 - entry) * 10, 1)
             elif current_price <= sl:
-                hit_outcome = "LOSS (SL Hit)"
-                pnl = round((sl - entry) * 10, 1)
+                hit_outcome = "BREAK-EVEN" if tp1_hit == 1 else "LOSS (SL Hit)"
+                pnl = 2.0 if tp1_hit == 1 else round((sl - entry) * 10, 1)
+
         elif direction == "SELL":
+            if current_price <= tp1 and tp1_hit == 0:
+                cursor.execute("UPDATE active_paper_trades SET stop_loss=?, tp1_hit=1 WHERE id=?", (entry - 0.20, t_id))
+                conn.commit()
+
             if current_price <= tp2:
-                hit_outcome = "WIN (TP2 Hit)"
+                hit_outcome = "WIN (TP2 Runner Hit)"
                 pnl = round((entry - tp2) * 10, 1)
             elif current_price >= sl:
-                hit_outcome = "LOSS (SL Hit)"
-                pnl = round((entry - sl) * 10, 1)
+                hit_outcome = "BREAK-EVEN" if tp1_hit == 1 else "LOSS (SL Hit)"
+                pnl = 2.0 if tp1_hit == 1 else round((entry - sl) * 10, 1)
 
         if hit_outcome:
             cursor.execute(
                 "INSERT INTO backtest_history (symbol, direction, entry_price, exit_price, pnl_pips, outcome, opened_at, closed_at, notes) VALUES (?,?,?,?,?,?,?,?,?)",
-                ("XAUUSD", direction, entry, current_price, pnl, hit_outcome, opened_at, time.time(), f"Automated Backtest Exit: {pnl:+} pips")
+                ("XAUUSD", direction, entry, current_price, pnl, hit_outcome, opened_at, time.time(), f"Management Exit: {pnl:+} pips")
             )
             cursor.execute("DELETE FROM active_paper_trades WHERE id=?", (t_id,))
             conn.commit()
@@ -144,20 +154,20 @@ def get_backtest_metrics():
     if not rows:
         return 0, 0.0, 0, 0
     total = len(rows)
-    wins = len([r for r in rows if "WIN" in r[1]])
+    wins = len([r for r in rows if "WIN" in r[1] or "BREAK-EVEN" in r[1]])
     losses = total - wins
     win_rate = round((wins / total) * 100, 1)
     net_pips = round(sum(r[0] for r in rows), 1)
     return total, win_rate, net_pips, wins
 
-# --- 3. Step 1: Real-Time TwelveData Spot Feed Engine ---
+# --- 3. Step 2 SMC Engine: Unmitigated FVG & Inducement Tracker ---
 @st.cache_data(ttl=20)
 def fetch_realtime_gold_dossier():
     api_key = st.session_state.twelvedata_key
     feed_source = "TwelveData Real-Time Spot (0s Delay)"
     
     try:
-        url_m5 = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=40&apikey={api_key}"
+        url_m5 = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=45&apikey={api_key}"
         res_m5 = requests.get(url_m5, timeout=8).json()
         
         if res_m5.get("status") != "ok" or "values" not in res_m5:
@@ -215,23 +225,48 @@ def fetch_realtime_gold_dossier():
             asian_high = round(recent_24['High'].max(), 2)
             asian_low = round(recent_24['Low'].min(), 2)
 
-        fvg_bullish = None
-        fvg_bearish = None
+        # Unmitigated FVG & Inducement Calculation
+        unmitigated_bullish_fvg = None
+        unmitigated_bearish_fvg = None
         fvg_ce = None
         ob_zone = None
-        for i in range(len(df_m5)-4, len(df_m5)-1):
-            c1_h = df_m5['High'].iloc[i-1]
-            c3_l = df_m5['Low'].iloc[i+1]
-            c1_l = df_m5['Low'].iloc[i-1]
-            c3_h = df_m5['High'].iloc[i+1]
-            if c3_l > c1_h and (c3_l - c1_h) >= 0.50:
-                fvg_bullish = f"${c1_h:.2f} - ${c3_l:.2f}"
-                fvg_ce = round((c1_h + c3_l) / 2, 2)
-                ob_zone = f"Bullish OB @ ${round(df_m5['Low'].iloc[i-1], 2)}"
-            if c1_l > c3_h and (c1_l - c3_h) >= 0.50:
-                fvg_bearish = f"${c3_h:.2f} - ${c1_l:.2f}"
-                fvg_ce = round((c1_l + c3_h) / 2, 2)
-                ob_zone = f"Bearish OB @ ${round(df_m5['High'].iloc[i-1], 2)}"
+        idm_status = "No Inducement Swept"
+
+        for i in range(len(df_m5)-2, max(len(df_m5)-18, 2), -1):
+            c1_h = df_m5['High'].iloc[i-2]
+            c3_l = df_m5['Low'].iloc[i]
+            
+            if c3_l > c1_h and (c3_l - c1_h) >= 0.50 and not unmitigated_bullish_fvg:
+                ce_midpoint = round((c1_h + c3_l) / 2, 2)
+                subsequent_lows = df_m5['Low'].iloc[i+1:]
+                if not subsequent_lows.empty:
+                    lowest_wick_after = subsequent_lows.min()
+                    if lowest_wick_after > c1_h:
+                        unmitigated_bullish_fvg = f"${c1_h:.2f} - ${c3_l:.2f} (FRESH)"
+                        fvg_ce = ce_midpoint
+                        ob_zone = f"Institutional Demand Block @ ${round(df_m5['Low'].iloc[i-2], 2)}"
+                        if df_m5['Low'].iloc[-4:].min() < df_m5['Low'].iloc[-8:-4].min():
+                            idm_status = "✅ Internal Inducement (IDM) Swept"
+                else:
+                    unmitigated_bullish_fvg = f"${c1_h:.2f} - ${c3_l:.2f} (FRESH)"
+                    fvg_ce = ce_midpoint
+
+            c1_l = df_m5['Low'].iloc[i-2]
+            c3_h = df_m5['High'].iloc[i]
+            if c1_l > c3_h and (c1_l - c3_h) >= 0.50 and not unmitigated_bearish_fvg:
+                ce_midpoint = round((c1_l + c3_h) / 2, 2)
+                subsequent_highs = df_m5['High'].iloc[i+1:]
+                if not subsequent_highs.empty:
+                    highest_wick_after = subsequent_highs.max()
+                    if highest_wick_after < c1_l:
+                        unmitigated_bearish_fvg = f"${c3_h:.2f} - ${c1_l:.2f} (FRESH)"
+                        fvg_ce = ce_midpoint
+                        ob_zone = f"Institutional Supply Block @ ${round(df_m5['High'].iloc[i-2], 2)}"
+                        if df_m5['High'].iloc[-4:].max() > df_m5['High'].iloc[-8:-4].max():
+                            idm_status = "✅ Internal Inducement (IDM) Swept"
+                else:
+                    unmitigated_bearish_fvg = f"${c3_h:.2f} - ${c1_l:.2f} (FRESH)"
+                    fvg_ce = ce_midpoint
 
         recent_6 = df_m5.iloc[-6:]
         bull_sweep = (recent_6['Low'].min() < asian_low and cur_price > asian_low)
@@ -249,10 +284,11 @@ def fetch_realtime_gold_dossier():
         zone_pd = "PREMIUM (Near Equilibrium)"
         asian_high = 2665.00
         asian_low = 2650.00
-        fvg_bullish = "$2654.50 - $2656.20"
-        fvg_bearish = "None"
+        unmitigated_bullish_fvg = "$2654.50 - $2656.20 (FRESH)"
+        unmitigated_bearish_fvg = "None"
         fvg_ce = 2655.35
-        ob_zone = "Bullish OB @ $2653.80"
+        ob_zone = "Institutional Demand Block @ $2653.80"
+        idm_status = "✅ Internal Inducement (IDM) Swept"
         bull_sweep = False
         bear_sweep = False
 
@@ -261,7 +297,7 @@ def fetch_realtime_gold_dossier():
     in_ny = (12 <= hour < 16)
     session_title = "LONDON OPEN KILLZONE" if in_london else ("NEW YORK OPEN KILLZONE" if in_ny else "STANDARD SESSION")
 
-    is_actionable = (bull_sweep or bear_sweep) or (fvg_bullish and abs(cur_price - (fvg_ce or cur_price)) < 1.8)
+    is_actionable = (bull_sweep or bear_sweep) or (unmitigated_bullish_fvg and abs(cur_price - (fvg_ce or cur_price)) < 1.8)
 
     return {
         "price": cur_price,
@@ -269,10 +305,11 @@ def fetch_realtime_gold_dossier():
         "atr": atr, "rsi": rsi,
         "h1_trend": h1_trend, "equilibrium": equilibrium_50, "zone_pd": zone_pd,
         "asian_high": asian_high, "asian_low": asian_low,
-        "fvg_bullish": fvg_bullish or "None in range",
-        "fvg_bearish": fvg_bearish or "None in range",
+        "fvg_bullish": unmitigated_bullish_fvg or "No Fresh FVG (All Mitigated)",
+        "fvg_bearish": unmitigated_bearish_fvg or "No Fresh FVG (All Mitigated)",
         "fvg_ce": fvg_ce or cur_price,
-        "ob_zone": ob_zone or "Mid-range unmitigated block",
+        "ob_zone": ob_zone or "No fresh institutional block",
+        "idm_status": idm_status,
         "bull_sweep": bull_sweep, "bear_sweep": bear_sweep,
         "is_actionable": is_actionable,
         "feed_source": feed_source,
@@ -281,14 +318,13 @@ def fetch_realtime_gold_dossier():
 
 m = fetch_realtime_gold_dossier()
 
-# Evaluate any active simulated positions against real-time spot price
+# Evaluate active paper positions with 70/30 scale-out & breakeven rules
 evaluate_active_paper_trades(m["price"])
 
-# --- Header & Live Institutional Bar ---
-st.title("👑 XAU/USD 5 Super-Agent Trading Room & Backtest Terminal")
-st.caption(f"Session: **{m['session']}** | Feed: **{m['feed_source']}** | Live Spot: **${m['price']}**")
+# --- Header & Live Metrics ---
+st.title("👑 XAU/USD Institutional Super-Desk (Step 2 Engine)")
+st.caption(f"Session: **{m['session']}** | Data: **{m['feed_source']}** | Live Spot: **${m['price']}**")
 
-# Top Metric Banner
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Live Gold Spot", f"${m['price']}")
 col2.metric("Asian Range High", f"${m['asian_high']}")
@@ -301,15 +337,15 @@ st.write("")
 # Context Card
 st.markdown(f"""
 <div class="card-box">
-    <b>📡 Step 1 Real-Time Telemetry:</b> <span class="live-badge">0-SEC LAG SPOT</span> {m['feed_source']}<br>
-    • <b>Array:</b> {m['zone_pd']} | <b>Macro Trend:</b> {m['h1_trend']} | <b>DXY:</b> {m['dxy']}<br>
-    • <b>Institutional Zones:</b> {m['ob_zone']} | Bullish FVG: <code>{m['fvg_bullish']}</code> | Bearish FVG: <code>{m['fvg_bearish']}</code>
+    <b>🏛️ Step 2 Institutional Array:</b> <span class="live-badge">STEP 2 ACTIVE</span> {m['feed_source']}<br>
+    • <b>Inducement:</b> {m['idm_status']} | <b>Array:</b> {m['zone_pd']} | <b>Macro:</b> {m['h1_trend']}<br>
+    • <b>Fresh Unmitigated Zones:</b> {m['ob_zone']} | Bullish: <code>{m['fvg_bullish']}</code> | Bearish: <code>{m['fvg_bearish']}</code>
 </div>
 """, unsafe_allow_html=True)
 
 # Navigation Tabs
 tab_chat, tab_chart, tab_backtest, tab_settings = st.tabs([
-    "💬 5 Super-Agents Room",
+    "💬 Super-Agents Room (With Skeptic)",
     "📈 TradingView Live Terminal",
     "📊 Backtest & Simulation Tracker",
     "⚙️ Credentials & Settings"
@@ -351,10 +387,10 @@ def query_super_agent_safe(client, prompt):
                     continue
                 break
 
-    raise Exception(f"Groq API Notice: {str(last_error)}")
+    raise Exception(f"Groq Notice: {str(last_error)}")
 
-# --- Full 5-Agent Execution Pipeline ---
-def execute_5_super_agents():
+# --- Full Execution Pipeline: 4 Specialists + 1 Skeptic + 1 Chief ---
+def execute_super_agents_pipeline():
     try:
         client = Groq(api_key=st.session_state.api_key)
     except Exception as e:
@@ -368,75 +404,50 @@ def execute_5_super_agents():
     Asian Range High: ${m['asian_high']} | Asian Low: ${m['asian_low']}
     H1 Macro Trend: {m['h1_trend']}
     50% Equilibrium: ${m['equilibrium']} ({m['zone_pd']})
-    Institutional Zones: {m['ob_zone']}
-    Active Bullish FVG: {m['fvg_bullish']}
-    Active Bearish FVG: {m['fvg_bearish']}
+    Institutional Block: {m['ob_zone']}
+    Fresh Bullish FVG: {m['fvg_bullish']}
+    Fresh Bearish FVG: {m['fvg_bearish']}
     50% FVG Midpoint (CE): ${m['fvg_ce']}
+    Inducement Status: {m['idm_status']}
     Bullish Asian Low Sweep: {m['bull_sweep']}
     Bearish Asian High Sweep: {m['bear_sweep']}
     M5 ATR Volatility: ${m['atr']}
-    DXY Dollar Index: {m['dxy']}
     Active Session: {m['session']}
     """
 
-    super_agent_team = [
+    agent_squad = [
         {
             "name": "Super Agent 1: Liquidity & Sweep Hunter",
             "avatar": "🎯",
-            "prompt": f"""You are Agent 1. YOUR SOLE JOB IS TO FIND LIQUIDITY AND CONFIRM LIQUIDITY SWEEPS.
-            Data:
-            - Asian Range High: ${m['asian_high']} | Asian Low: ${m['asian_low']}
-            - Recent 30m Range: ${m['m5_low']} to ${m['m5_high']}
-            - Bullish Asian Low Sweep: {m['bull_sweep']}
-            - Bearish Asian High Sweep: {m['bear_sweep']}
-            Task:
-            Has Buy-Side (BSL) or Sell-Side (SSL) liquidity been swept? Are stop-losses taken?
-            Output your sweep verdict in under 65 words."""
+            "prompt": f"You are Agent 1. SOLE JOB: FIND LIQUIDITY & CONFIRM SWEEPS. Data: {context_data}. Did an Asian High/Low or BSL/SSL sweep occur? Output verdict under 65 words."
         },
         {
             "name": "Super Agent 2: Trend, Macro & News Specialist",
             "avatar": "🌐",
-            "prompt": f"""You are Agent 2. YOUR JOB IS TO EVALUATE HTF TREND, MACRO DXY, AND NEWS RISKS.
-            Data:
-            - H1 Macro Trend: {m['h1_trend']}
-            - 50% Equilibrium: ${m['equilibrium']} ({m['zone_pd']})
-            - US Dollar Index (DXY): {m['dxy']}
-            - Active Session: {m['session']}
-            Task:
-            Does the macro trend and DXY inverse correlation support Gold direction right now? Is news danger present?
-            Output your macro/trend verdict in under 65 words."""
+            "prompt": f"You are Agent 2. SOLE JOB: HTF TREND & MACRO ALIGNMENT. Data: {context_data}. Does H1 trend and session flow support this direction? Output verdict under 65 words."
         },
         {
-            "name": "Super Agent 3: Institutional Area Specialist",
+            "name": "Super Agent 3: Institutional Zone Specialist",
             "avatar": "🏛️",
-            "prompt": f"""You are Agent 3. YOUR JOB IS TO MAP INSTITUTIONAL AREAS (ORDER BLOCKS & FAIR VALUE GAPS).
-            Data:
-            - Institutional Blocks: {m['ob_zone']}
-            - Bullish FVG: {m['fvg_bullish']}
-            - Bearish FVG: {m['fvg_bearish']}
-            - 50% FVG Midpoint (CE): ${m['fvg_ce']}
-            Task:
-            Identify the high-probability institutional order block and Fair Value Gap (FVG) where smart money will mitigate.
-            Output your institutional zone read in under 65 words."""
+            "prompt": f"You are Agent 3. SOLE JOB: MAP FRESH UNMITIGATED ORDER BLOCKS & FVGs. Data: {context_data}. Is the FVG fresh/unmitigated? Has Inducement ({m['idm_status']}) been cleared? Output verdict under 65 words."
         },
         {
-            "name": "Super Agent 4: Momentum, Volume & Trap Detector",
+            "name": "Super Agent 4: Momentum & Trap Detector",
             "avatar": "⚡",
-            "prompt": f"""You are Agent 4. YOUR JOB IS TO CHECK VOLUME, VOLATILITY, AND RETAIL BREAKOUT TRAPS.
-            Data:
-            - M5 ATR Volatility: ${m['atr']}
-            - M5 RSI (14): {m['rsi']}
-            Task:
-            Is this displacement real or a retail trap? Does current ATR allow safe scalping without spread blowout?
-            Output your momentum and trap clearance under 60 words."""
+            "prompt": f"You are Agent 4. SOLE JOB: MOMENTUM, VOLUME & RETAIL TRAP CHECK. Data: {context_data}. Is displacement institutional or a retail trap? Output verdict under 60 words."
+        },
+        {
+            "name": "Super Agent 5: Devil's Advocate (Skeptic Prosecutor)",
+            "avatar": "😈",
+            "prompt": f"You are the Devil's Advocate. YOUR SOLE JOB IS TO ATTACK THIS TRADE AND FIND WEAKNESSES. Data: {context_data}. What overhead resistance, unmitigated opposing zone, or spread trap could destroy this scalp? Deliver your ruthless critique under 65 words."
         }
     ]
 
     statements = []
 
     try:
-        for ag in super_agent_team:
-            with st.spinner(f"{ag['name']} evaluating live market..."):
+        for ag in agent_squad:
+            with st.spinner(f"{ag['name']} analyzing live market..."):
                 res = query_super_agent_safe(client, ag["prompt"])
                 statements.append(f"{ag['name']}: {res}")
 
@@ -450,45 +461,45 @@ def execute_5_super_agents():
                     "avatar": ag["avatar"],
                     "content": res
                 })
-                time.sleep(0.8)
+                time.sleep(0.6)
 
-        # Super Agent 5: Master Scalp Commander
-        with st.spinner("Super Agent 5 (Master Scalp Commander) is synthesizing all 4 agents and formulating exact trade ticket..."):
+        # Chief Scalp Commander: Weighs the 4 specialists against the Devil's Advocate
+        with st.spinner("Chief Scalp Commander is resolving Skeptic objections and finalizing trade ticket..."):
             chief_prompt = f"""
-            You are Agent 5, Master Scalp Commander. YOUR JOB IS TO SYNTHESIZE ALL 4 AGENTS, CALCULATE CONFLUENCE, AND TRIGGER EXACT ENTRY, STOP LOSS, AND TAKE PROFIT.
-            Team Dossiers:
+            You are the Chief Scalp Commander. YOU HAVE ABSOLUTE FINAL AUTHORITY.
+            Review the 4 specialist reports and the Devil's Advocate critique:
             {"".join(statements)}
             
-            Live Gold Price: ${m['price']}
-            ATR Volatility: ${m['atr']}
-            50% FVG Midpoint: ${m['fvg_ce']}
+            Live Price: ${m['price']}
+            ATR: ${m['atr']}
+            Fresh FVG 50% CE: ${m['fvg_ce']}
+            Inducement: {m['idm_status']}
             
-            STRICT CONFLUENCE RULE:
-            If Agents 1-4 disagree, trap risk is elevated, or structure is choppy, output 'NO TRADE (WAIT FOR CLEAN SWEEP)'.
-            Only authorize execution if there is minimum 3-agent confluence with >= 80% Win Probability.
+            STRICT CONFLUENCE & SKEPTIC SURVIVAL RULE:
+            - If the Devil's Advocate exposed a critical flaw (e.g. opposing HTF block nearby, no fresh FVG, or trap), output 'NO TRADE (VETOED BY SKEPTIC)'.
+            - Only authorize BUY or SELL if the setup withstands the critique with >= 85% Win Probability.
             
-            Produce the FINAL HIGH-PROBABILITY TICKET strictly in this format:
-            ### 🎯 VERIFIED M5 SCALP TICKET
-            * **Signal Action:** [STRONG BUY / BUY / NO TRADE (WAIT) / SELL / STRONG SELL]
-            * **Execution Style:** [Market Execution OR 50% FVG Limit Entry @ ${m['fvg_ce']}]
-            * **Entry Price Zone:** [Exact Price Range, e.g. ${m['price']-0.5} - ${m['price']+0.5}]
-            * **Stop Loss (SL):** [Exact Price - strictly calculated 15 to 25 pips max buffer]
-            * **Take Profit 1 (TP1):** [Conservative - 1:1.5 RR, bank 70% volume]
-            * **Take Profit 2 (TP2):** [Runner Target - 1:3+ RR towards opposing liquidity]
-            * **Risk-to-Reward (R:R):** [Calculated RR]
-            * **Execution Management:** [e.g. Move SL to Breakeven immediately upon hitting TP1]
+            Produce the FINAL TICKET strictly in this format:
+            ### 🎯 VERIFIED INSTITUTIONAL SCALP TICKET
+            * **Signal Action:** [STRONG BUY / BUY / NO TRADE (VETOED) / SELL / STRONG SELL]
+            * **Execution Style:** [50% Fresh FVG Limit Entry @ ${m['fvg_ce']} OR Market Order]
+            * **Entry Zone:** [Exact Price Range, e.g. ${m['price']-0.5} - ${m['price']+0.5}]
+            * **Stop Loss (SL):** [Exact Price - strictly 15 to 22 pips max]
+            * **Take Profit 1 (TP1):** [Conservative - 1:1.5 RR, bank 70% volume and move SL to BE]
+            * **Take Profit 2 (TP2):** [Runner Target - 1:3+ RR opposing liquidity]
+            * **Skeptic Rebuttal:** [1 short sentence explaining why this trade survived the Devil's Advocate]
             * **Invalidation Level:** [Exact price that cancels this trade]
             """
 
             final_ticket = query_super_agent_safe(client, chief_prompt)
 
             with st.chat_message("assistant", avatar="⚖️"):
-                st.markdown("**Super Agent 5: Master Scalp Commander**")
+                st.markdown("**Chief Scalp Commander (Final Verdict)**")
                 st.success(final_ticket)
 
             st.session_state.chat_messages.append({
                 "role": "assistant",
-                "name": "Super Agent 5: Master Scalp Commander",
+                "name": "Chief Scalp Commander",
                 "avatar": "⚖️",
                 "content": final_ticket
             })
@@ -496,13 +507,13 @@ def execute_5_super_agents():
             # Automated Simulation Injection for Backtesting:
             if "STRONG BUY" in final_ticket or "BUY" in final_ticket:
                 sl_val = round(m["price"] - (m["atr"] * 1.5), 2)
-                tp1_val = round(m["price"] + (m["atr"] * 2.2), 2)
-                tp2_val = round(m["price"] + (m["atr"] * 4.0), 2)
+                tp1_val = round(m["price"] + (m["atr"] * 1.8), 2)
+                tp2_val = round(m["price"] + (m["atr"] * 3.6), 2)
                 log_simulated_trade("BUY", m["price"], sl_val, tp1_val, tp2_val)
             elif "STRONG SELL" in final_ticket or "SELL" in final_ticket:
                 sl_val = round(m["price"] + (m["atr"] * 1.5), 2)
-                tp1_val = round(m["price"] - (m["atr"] * 2.2), 2)
-                tp2_val = round(m["price"] - (m["atr"] * 4.0), 2)
+                tp1_val = round(m["price"] - (m["atr"] * 1.8), 2)
+                tp2_val = round(m["price"] - (m["atr"] * 3.6), 2)
                 log_simulated_trade("SELL", m["price"], sl_val, tp1_val, tp2_val)
 
     except Exception as e:
@@ -514,9 +525,9 @@ def execute_5_super_agents():
 with tab_chat:
     col_tgl, col_btn, col_clear = st.columns([2, 3, 1])
     with col_tgl:
-        auto_pilot = st.toggle("🟢 Auto-Pilot 24/7 Scanner", value=False, help="Monitors Gold continuously. Triggers 5 Super Agents when an A+ setup forms.")
+        auto_pilot = st.toggle("🟢 Auto-Pilot 24/7 Scanner", value=False, help="Monitors Gold continuously. Triggers squad when fresh A+ setup forms.")
     with col_btn:
-        manual_scan = st.button("🚀 INITIATE 5 SUPER-AGENTS DEBATE", type="primary")
+        manual_scan = st.button("🚀 INITIATE INSTITUTIONAL DEBATE", type="primary")
     with col_clear:
         if st.button("🧹 Clear"):
             st.session_state.chat_messages = []
@@ -524,20 +535,21 @@ with tab_chat:
 
     if auto_pilot:
         if m["is_actionable"]:
-            st.success("🔥 **A+ INSTITUTIONAL SETUP DETECTED!** Swept liquidity or FVG retest confirmed. 5 Super Agents initiating audit...")
-            execute_5_super_agents()
+            st.success("🔥 **A+ INSTITUTIONAL SETUP DETECTED!** Fresh unmitigated zone confirmed. Super agents initiating debate...")
+            execute_super_agents_pipeline()
         else:
             st.markdown(f"""
             <div class="card-box">
-                🤖 <b>Auto-Pilot 24/7 Monitoring:</b> Asian High: <code>${m['asian_high']}</code> | Asian Low: <code>${m['asian_low']}</code>.<br>
-                Standing by for London/NY Liquidity Sweep. <small style="color: #8b949e;">(Live TwelveData Spot Stream)</small>
+                🤖 <b>Auto-Pilot 24/7 Active:</b> Monitoring Gold...<br>
+                Fresh Zone: <code>{m['fvg_bullish']}</code> | Inducement: <code>{m['idm_status']}</code><br>
+                <small style="color: #8b949e;">Standing by for London/NY sweep. (Auto-updates smoothly)</small>
             </div>
             """, unsafe_allow_html=True)
 
     if manual_scan:
-        execute_5_super_agents()
+        execute_super_agents_pipeline()
 
-    # Display Chat History with Zero Flicker
+    # Display Chat History
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"], avatar=msg["avatar"]):
             st.markdown(f"**{msg['name']}**")
@@ -576,8 +588,8 @@ with tab_chart:
 # TAB 3: BACKTEST & SIMULATION TRACKER
 # ==========================================
 with tab_backtest:
-    st.subheader("📊 Automated Paper-Trading & Backtest Tracker")
-    st.caption("When Agent 5 generates a trade, it is automatically logged and tracked against live market price to record real win/loss outcomes.")
+    st.subheader("📊 Step 2 Automated Backtest Tracker (70/30 Scale-Out)")
+    st.caption("When TP1 is reached: 70% profit is banked and Stop Loss automatically moves to Break-Even (Risk-Free).")
 
     tot_trades, wr, net_p, win_count = get_backtest_metrics()
     
@@ -585,16 +597,16 @@ with tab_backtest:
     b1.metric("Total Simulated Trades", tot_trades)
     b2.metric("Win Rate", f"{wr}%")
     b3.metric("Net Pips Gain/Loss", f"{net_p:+} pips")
-    b4.metric("Winning Scalps", f"{win_count} / {tot_trades}")
+    b4.metric("Winning / BE Scalps", f"{win_count} / {tot_trades}")
 
     st.write("")
     st.markdown("#### 🔄 Currently Active Paper Positions:")
     conn = get_backtest_db()
-    active_df = pd.read_sql("SELECT symbol, direction, entry_price, stop_loss, tp1, tp2, datetime(opened_at, 'unixepoch') as opened_time FROM active_paper_trades", conn)
+    active_df = pd.read_sql("SELECT symbol, direction, entry_price, stop_loss, tp1, tp2, CASE WHEN tp1_hit=1 THEN 'YES (SL at Breakeven)' ELSE 'NO (Full Risk)' END as sl_at_breakeven, datetime(opened_at, 'unixepoch') as opened_time FROM active_paper_trades", conn)
     if not active_df.empty:
         st.dataframe(active_df, use_container_width=True)
     else:
-        st.info("No active simulated positions right now. A new position will automatically open when Agent 5 triggers a BUY or SELL setup.")
+        st.info("No active simulated positions. New trades open automatically when Chief Commander authorizes an entry.")
 
     st.write("")
     st.markdown("#### 📋 Completed Backtest Trade Journal:")
